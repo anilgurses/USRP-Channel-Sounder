@@ -1,0 +1,65 @@
+MODE: RX
+MAX_FREQ_OFF: 4.0E+3 # This isnot used anymore maybe add sync
+PERIOD: 2 # How many burst should be sent in a sec
+CALIBRATION:
+  TYPE: INTERNAL
+  RX_REF: 0
+  RX_REF_CSV: '../config/rx_pwr_ref.csv'
+  TX_REF: 0 # Not Implemented
+  TX_REF_CSV: '' # Not Implemented
+WAVEFORM: ZC # PN, CHIRP, and Zadoff-Chu(ZC) for now
+# SAMPLING_DURATION: 0.2
+RECV_OPTS:
+  DURATION: 0.001
+  CALC:
+    POWER: true
+    PL: false
+    PLOT: false
+  OUTPUT_TYPE: 'npz' # npz, mat, or sigmf
+FILTER:
+  ENABLED: false
+  TYPE: LP
+  BW: 2e+6
+WAV_OPTS:
+  CHIRP:
+    COMPLEX: true
+    PHASE: 0 # Phase in radian
+    COMPRESS: false
+    PULSE_RATIO: 10
+    DURATION: 1.0
+    BW: 5.6e+7
+  ZC:
+    ROOT_IND: 200
+    SEQ_LEN: 401
+  PN:
+    POLY: [1,0,0,0,0,1,1,0,1,1]
+      # POLY: [1, 0, 0, 0, 0, 1, 0, 0, 1]
+      #SEQ_LEN: 255 # 2^{degree} - 1
+    SEQ_LEN: 1023
+    COMPLEX_BB: true
+  OFDM:
+    SUBCARRIERS: 512
+    N_PILOTS: 512
+    N_FFT: 512
+USRP:
+  #SERIAL: '32332EC'
+  SERIAL: ''
+  NUM_FRAMES: 60
+  GAIN: 70
+  SAMPLE_RATE: 5.6E+7
+  CENTER_FREQ: 3.564e+9
+  INIT_DELAY: 0.5 # 0.05
+  CLK_REF: EXT
+  PPS_REF: EXT
+INTERPOLATION:
+  ENABLED: false
+  SPS: 8
+  NUM_TAPS: 101
+  ROLLOFF: 0.35
+  THR_OFF: 25
+GPS:
+  ENABLED: false
+  SOURCE: gnss # or vehicle
+  DIR: /dev/ttyACM0
+# Note for measurement
+NOTE: "Walking with a reflector between RX and TX"
