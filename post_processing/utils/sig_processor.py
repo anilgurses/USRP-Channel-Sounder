@@ -1,7 +1,4 @@
 from dataclasses import dataclass, asdict, field
-from math import pi
-from arrow import get
-from more_itertools import first
 import numpy as np
 from geopy.distance import geodesic
 import time
@@ -31,6 +28,8 @@ class SignalMetric:
     detected: bool
     power: np.ndarray
     avgPower: np.float16 
+    snr: np.ndarray
+    avgSnr: np.float32
     freq_offset: np.float64
     path_loss: np.ndarray
     avg_pl: np.float16
@@ -53,7 +52,6 @@ class SignalMetric:
     save_corr: bool = False
 
     # TODO Not implemented yet
-    snr: np.float32 = np.float32(0.0)
     rsrp: np.float32 = np.float32(0.0)
     shadowing: int = 0
     multipath: int = 0
@@ -104,6 +102,21 @@ class SigProcessor:
     
     def calcPathLoss(self, sig_of_int, tx_ref_dbm, rx_ref_dbm):
         return tx_ref_dbm + self.calcPowerdBm(self.ref_signal) - rx_ref_dbm - self.calcPowerdBm(sig_of_int)
+    
+    def calcSNR(self, sig_of_interest, seq):
+        if len(sig_of_interest) < len(seq):
+            raise ValueError("The length of the signal is less than the length of the reference sequence")
+        correlation = np.correlate(sig_of_interest, seq, mode='full')
+        peak_index = np.argmax(np.abs(correlation))
+        signal_est = correlation[peak_index] / len(seq)
+        
+        signal_power = np.abs(signal_est)**2
+
+        reconstructed_signal = signal_est * seq
+        residual_noise = sig_of_interest[:len(reconstructed_signal)] - reconstructed_signal
+        noise_power = np.mean(np.abs(residual_noise)**2)
+        snr_estimated = signal_power / noise_power
+        return 10 * np.log10(snr_estimated)
     
     def calcDist(self, ind):
         """Calculate the distance between the receiver and the transmitter"""
@@ -169,6 +182,8 @@ class SigProcessor:
         sgnlMetric.detected = False
         sgnlMetric.power = np.array([])
         sgnlMetric.avgPower = 0.0
+        sgnlMetric.snr = np.array([])
+        sgnlMetric.avgSnr = 0.0
         sgnlMetric.freq_offset = 0.0
         sgnlMetric.path_loss = np.array([])
         sgnlMetric.avg_pl = 0.0
@@ -183,14 +198,21 @@ class SigProcessor:
         sgnlMetric.vehicle = vehicle
         sgnlMetric.corr = np.array([])
         sgnlMetric.save_corr = False
-        sgnlMetric.snr = 0.0
         sgnlMetric.rsrp = 0.0
         sgnlMetric.shadowing = 0
         sgnlMetric.multipath = 0
         sgnlMetric.delay = 0
         sgnlMetric.doppler = 0
         return sgnlMetric
-
+    
+    # Shift the CIR by the offset value 
+    # then crop the CIR to the size of the reference signal
+    def adjustCIR(self, cir, ref, first_peak):
+        cir = np.roll(cir, first_peak-ref)
+        cir = cir[:self.total_len]
+        return cir
+    
+    
     def process(self, r_time, rcv, vehicle_metric, save_corr=True):
         """Process the received signal step by step"""
         metrics = SignalMetric()
@@ -289,12 +311,7 @@ class SigProcessor:
                
                
         # 6 - Channel related metrics
+        metrics.snr = np.array([self.calcSNR(rcv[peak:peak+_pr_len], self.ref_signal) for peak in peaks])
+        metrics.avgSnr = np.mean(metrics.snr)
         
         return metrics
-    
-    # Shift the CIR by the offset value 
-    # then crop the CIR to the size of the reference signal
-    def adjustCIR(self, cir, ref, first_peak):
-        cir = np.roll(cir, first_peak-ref)
-        cir = cir[:self.total_len]
-        return cir

@@ -1,5 +1,4 @@
 import numpy as np
-from regex import P, W
 from scipy import signal
 from dataclasses import dataclass
 
@@ -32,8 +31,7 @@ class Channel:
     
     def calculateShadowing(self, config):   
         pass
-    
-    
+ 
 class RMa3GPPChannelModel(Channel):
     def __init__(self) -> None:
         pass
@@ -41,26 +39,31 @@ class RMa3GPPChannelModel(Channel):
     def generateCIR(self, config, tx, rx):
         pass
     
-    def pathLoss(self, d_2d, fc, h_bs = 10, h_ue = 1.5, h = 2, w = 20):
+    @staticmethod
+    def pathLoss(d_2d, d_3D, fc, h_bs = 10, h_ue = 1.5, h = 5, w = 10):
         PL_RMa_LOS, PL_RMa_NLOS = 0.0, 0.0
         
-        d_BP = 2*np.pi*h_bs*h_ue*fc
-        d_3D = np.sqrt(d_2d**2 + abs(h_bs-h_ue)**2)
+        if h_ue < 1 : 
+            return np.nan
+        d_BP = 2*np.pi*h_bs*h_ue*fc 
+        if d_BP == 0.0 or d_3D == 0.0:
+            return np.nan
+        
         PL_1 = 20*np.log10(40*np.pi*d_3D*fc/3) +  min(0.03*h**1.72 , 10)*np.log10(d_3D) - min(0.044*h**1.72 , 14.77) + 0.002*np.log10(h) *d_3D
         PL_2 = PL_1 + 40*np.log10(d_3D/d_BP)
-        
         if  10 < d_2d and d_2d <= d_BP:
-            PL_RMa_LOS = PL_1 + 4
+            PL_RMa_LOS = PL_1 + 4 * np.random.normal(0, 1) # Shadow fading
+        elif d_2d < 10:
+            PL_RMa_Los = np.nan
         elif d_BP < d_2d and d_2d <= 10*1000:
-            PL_RMa_LOS = PL_2 + 6
+            PL_RMa_LOS = PL_2 + 6 * np.random.normal(0, 1)
             
         PL_RMa_NLOS_2 = 161.04 - 7.1*np.log10(40*w) + 7.5*np.log10(h) -(24.37 - 3.7*(h/h_bs)*(h/h_bs))*np.log10(h_bs) + (43.42 - 3.1 * np.log10(h_bs))*(np.log10(d_3D)-3) + 20*np.log10(fc) - (3.2*np.log10(11.75*h_ue)**2 - 4.97)
         
         if 10 < d_2d and d_2d <= 5*1000:
             PL_RMa_NLOS = max(PL_RMa_LOS, PL_RMa_NLOS_2) + 8
-            
         
-        return PL_RMa_LOS, PL_RMa_NLOS
+        return PL_RMa_LOS
     
     def calculateShadowing(self, config):   
         pass

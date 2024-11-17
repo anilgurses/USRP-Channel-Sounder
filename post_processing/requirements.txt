@@ -1,0 +1,15 @@
+numpy
+scipy
+matplotlib
+tqdm
+plotly
+pandas
+simplekml
+pyyaml
+pyvista
+geographiclib
+geopy
+kaleido
+nbformat
+ipywidgets
+tables
