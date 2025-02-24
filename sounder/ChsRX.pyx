@@ -126,7 +126,7 @@ class Receiver:
                     logger.info(f"Pathloss: {pl} dBm")
 
             if self.config.RX.OUTPUT_TYPE == "npz":
-                np.savez(f"{out_dir}/received_{math.ceil(rcv_time*100)/100}.npz",
+                np.savez(f"{out_dir}/received_{rcv_time}.npz",
                          rcv    =   buff,
                          ref   =  waveform,
                          rx_time  = rcv_time,
@@ -135,7 +135,7 @@ class Receiver:
                          allow_pickle = True
                         )
             elif self.config.RX.OUTPUT_TYPE == "mat":
-                savemat(f"{out_dir}/received_{math.ceil(rcv_time*100) / 100}.mat",
+                savemat(f"{out_dir}/received_{rcv_time}.mat",
                         {
                             "buff":buff,
                             "ref":waveform,
