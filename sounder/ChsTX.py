@@ -48,9 +48,9 @@ class Transmitter:
                 usrp_time = usrp.get_time_now().get_real_secs()
 
             time_tx += inc_sec
-            time_tx = math.ceil(time_tx * 100) / 100
+            time_tx = math.ceil(time_tx * 1e4) / 1e4
 
             if (time_tx * 10 ) % 2 != 0:
-                time_tx = (math.ceil((time_tx*10) / 2.) * 2) / 10
+                time_tx = (math.ceil((time_tx*1e4) / 2.0) * 2.0) / 1e4
 
             # time_tx = usrp.get_time_now().get_full_secs() + 1.0

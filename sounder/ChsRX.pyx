@@ -192,8 +192,8 @@ class Receiver:
                 stream_cmd.time_spec = uhd.types.TimeSpec(time_rx)
                 rx_stream.issue_stream_cmd(stream_cmd)
 
-                # The difference between scheduled time and usrp time can't be bigger than 5s
-                num_rx_samps = rx_stream.recv(recv_buffer, metadata, 5)
+                # The difference between scheduled time and usrp time can't be bigger than 1s
+                num_rx_samps = rx_stream.recv(recv_buffer, metadata, 1)
                 print(math.ceil(metadata.time_spec.get_real_secs()))
 
                 if gps:
@@ -238,10 +238,10 @@ class Receiver:
                 mlt = (usrp_time - time_rx) / inc_sec + 1
                 time_rx += mlt * inc_sec
 
-            time_rx = math.ceil(time_rx * 100) / 100
+            time_rx = math.ceil(time_rx * 1e4) / 1e4
              
             if (time_rx * 10 ) % 2 != 0:
-                time_rx = (math.ceil((time_rx*10) / 2.) * 2) / 10
+                time_rx = (math.ceil((time_rx*1e4) / 2.0) * 2.0) / 1e4
              
 
             if metadata.error_code == uhd.types.RXMetadataErrorCode.none:
