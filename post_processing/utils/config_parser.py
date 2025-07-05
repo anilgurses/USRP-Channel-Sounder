@@ -52,12 +52,13 @@ class RX_Opts:
 
 
 class Waveform:
-    def __init__(self, type, wav_opts):
+    def __init__(self, type, wav_opts, sigmf=False):
         self.type = type
 
-        self.SUBCARRIERS = wav_opts["OFDM"]["SUBCARRIERS"]
-        self.N_PILOT = wav_opts["OFDM"]["N_PILOTS"]
-        self.N_FFT = wav_opts["OFDM"]["N_FFT"]
+        if not sigmf:
+            self.SUBCARRIERS = wav_opts["OFDM"]["SUBCARRIERS"]
+            self.N_PILOT = wav_opts["OFDM"]["N_PILOTS"]
+            self.N_FFT = wav_opts["OFDM"]["N_FFT"]
 
         if type == "PN":
             self.SEQ_LEN = wav_opts["PN"]["SEQ_LEN"]
@@ -78,7 +79,23 @@ class Waveform:
 
 
 class Config(object):
-    def __init__(self, fname):
+    def __init__(self, fname, sigmf=False):
+        if sigmf:
+            self.MODE = "sigmf"
+            self.PERIOD = 0
+            self.MAX_FREQ_OFF = 0
+            self.RX = RX_Opts(0, False, False, False, "sigmf")
+            self.CAL = Calibration("INTERNAL", 0, "", 0, "")
+            self.FILTER = Filter(False, "LP", 0)
+            self.WAVEFORM = "ZC"
+            self.WAV_OPTS = None
+            self.USRP_CONF = USRP("", 0, 0, 0, 0, 0, "", "")
+            self.INTERP = Interpolation(False, 0, 0, 0, 0)
+            self.GPS = GPS(False, "", "")
+            self.NOTE = ""
+            self.raw = {}
+            return
+
         with open(fname, "r") as stream:
             config = yaml.safe_load(stream)
         self.raw = config 
@@ -144,6 +161,23 @@ class Config(object):
         self.GPS = GPS(temp_gps["ENABLED"], temp_gps["SOURCE"], temp_gps["DIR"])
         self.NOTE = config["NOTE"]
 
+    def sigmf_parser(self, sigmf_meta):
+        capture = sigmf_meta.get_captures()[0]
+        global_info = sigmf_meta.get_global_info()
+        self.WAVEFORM = global_info['core:waveform']
+        if self.WAVEFORM == "ZC":
+            self.WAV_OPTS = Waveform(self.WAVEFORM, {
+                "ZC": {
+                    "SEQ_LEN": global_info.get("core:zc_len", 0),
+                    "ROOT_IND": global_info.get("core:zc_root_index", 0)
+                }
+            }, sigmf=True)
+        self.USRP_CONF = USRP(
+            SERIAL="",
+            SAMPLE_RATE=global_info.get("core:sample_rate", 20e6),
+            CENTER_FREQ=capture.get("core:frequency", 2.4e9)
+        )
+    
     def to_dict(self):
         return self.raw
     

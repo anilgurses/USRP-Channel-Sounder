@@ -5,6 +5,7 @@ pyyaml
 pySerial
 cython
 matplotlib
+sigmf
 scikit-commpy 
 spidev 
 sparkfun-ublox-gps

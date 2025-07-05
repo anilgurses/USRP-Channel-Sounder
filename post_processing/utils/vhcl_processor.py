@@ -1,6 +1,9 @@
 from dataclasses import dataclass, asdict
 from numpy import roll 
 from datetime import datetime 
+from sigmf import SigMFFile, sigmffile
+import glob
+import os
 
 @dataclass
 class VehicleMetric:
@@ -52,13 +55,38 @@ class Vehicle_Processor:
         )
         return v_metric
     
-    def read_vehicle_data(self, path):
-        with open(path, 'r') as file:
-            lines = file.readlines()
-            for line in lines:
-                ln = line.split(',')
-                if len(ln) > 1:
-                    self.metrics.append(self.parseMetrics(ln))
+    def parseMetricsSigmf(self, metrics):
+        v_metric = VehicleMetric(
+            time=datetime.fromtimestamp(metrics['core:timestamp']),
+            type="UAV",
+            lon=float(metrics['core:rx_location']['longitude']),
+            lat=float(metrics['core:rx_location']['latitude']),
+            alt=float(metrics['core:rx_location']['altitude']),
+            pitch=float(metrics['core:rotation']['pitch']),
+            yaw=float(metrics['core:rotation']['yaw']),
+            roll=float(metrics['core:rotation']['roll']),
+            vel_x=float(metrics['core:velocity']['velocity_x']),
+            vel_y=float(metrics['core:velocity']['velocity_y']),
+            vel_z=float(metrics['core:velocity']['velocity_z'])
+        )
+        return v_metric
+    
+    def read_vehicle_data(self, path, sigmf=False):
+        if sigmf:
+            files = glob.glob(os.path.join(path, '*.sigmf-meta'))
+            if not files:
+                print(f"No sigmf-meta files found in {path}")
+                return
+            for meta_file in files:
+                meta = sigmffile.fromfile(meta_file).get_captures()[0]
+                self.metrics.append(self.parseMetricsSigmf(meta))
+        else:
+            with open(path, 'r') as file:
+                lines = file.readlines()
+                for line in lines:
+                    ln = line.split(',')
+                    if len(ln) > 1:
+                        self.metrics.append(self.parseMetrics(ln))
                 else:
                     print(ln)
     

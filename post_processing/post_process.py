@@ -15,6 +15,8 @@ import simplekml
 import yaml
 import argparse
 from tqdm.contrib.concurrent import process_map
+from sigmf import SigMFFile
+import commpy
 
 from utils.antenna import *
 from utils.vhcl_processor import * 
@@ -105,9 +107,12 @@ class PostProcessor:
 			self.config = yaml.load(f, Loader=yaml.FullLoader)
 		return self.config
 
-	def get_exp_dir(self, path):
+	def get_exp_dir(self, path, sigmf=False):
 		for m in path:
-			fls = glob.glob(m+"/*.npz")
+			if sigmf:
+				fls = glob.glob(m+"/*.sigmf-data")
+			else:
+				fls = glob.glob(m+"/*.npz")
 			if len(fls) > 500:
 				self.exp_dir_list.append(m)
 		self.exp_dir_list.sort()
@@ -141,6 +146,15 @@ class PostProcessor:
 		ind_n = self._nearest([v.time for v in self.vhc_metrics], datetime.fromtimestamp(r["time_info"].item()))
 		res = self.s_prc.process(r["rx_time"], r["rcv"][0], self.vhc_metrics[ind_n])
 		return res
+	
+	def _process_meas_sigmf(self, path):
+		meta = sigmffile.fromfile(path.replace(".sigmf-data", ".sigmf-meta"))
+		ts = datetime.fromtimestamp(meta.get_captures()[0]["core:timestamp"])
+		rx_time = meta.get_captures()[0]["core:time"]
+		rcv = np.fromfile(path, dtype=np.complex64)
+		ind_n = self._nearest([v.time for v in self.vhc_metrics], ts)
+		res = self.s_prc.process(rx_time, rcv, self.vhc_metrics[ind_n])
+		return res
 
 	def _pick_key_from_metrics(self, metrics, key):
 		r = []
@@ -150,34 +164,56 @@ class PostProcessor:
 					r.append(getattr(metrics[i], key))
 		return r
 
-	def _process(self, path, ext_loc=None):
-		measurements = sorted(glob.glob(path+"/*.npz"), key=os.path.getmtime)
-		vhc_log = self._find_closest_log("../field_data/vehicle_logs/", path)
-		locs_dir = glob.glob(vhc_log)
+	def _process(self, path, sigmf=False):
+		if sigmf:
+			measurements = sorted(glob.glob(path+"/*.sigmf-data"), key=os.path.getmtime)
+			logs_dir = glob.glob(path)[0]
+		else:
+			measurements = sorted(glob.glob(path+"/*.npz"), key=os.path.getmtime)
+			vhc_log = self._find_closest_log("../field_data/vehicle_logs/", path)
+			logs_dir = glob.glob(vhc_log)[0]
 
-		if not locs_dir:
-			return None	
+		if not logs_dir:
+			return None
 
 		vehicle = Vehicle_Processor(self.config)
-		vehicle.read_vehicle_data(locs_dir[0])
-
+		vehicle.read_vehicle_data(logs_dir, sigmf)
 		self.vhc_metrics = vehicle.get_metrics()
 
-		r = np.load(measurements[0], allow_pickle=True)
+		if sigmf:
+			meta = sigmffile.fromfile(measurements[0])
+			if self.config.WAVEFORM == "ZC":
+				ZC_LEN = meta.get_global_info().get("core:zc_len", 401)
+				ROOT_IND = meta.get_global_info().get("core:zc_root_index", 0)
+				print(f"ZC_LEN: {ZC_LEN}, ROOT_IND: {ROOT_IND}")
+				ref = commpy.zcsequence(
+					ROOT_IND, ZC_LEN
+				)
+		else:
+			r = np.load(measurements[0], allow_pickle=True)
+			ref = r["ref"]
 
-		self.s_prc = SigProcessor(self.config, r["ref"][:ZC_LEN], None, ZC_LEN*4)
-  
-		rp = process_map(self._process_meas, measurements, max_workers=os.cpu_count())
+		self.s_prc = SigProcessor(self.config, ref[:ZC_LEN], None, ZC_LEN*4)
+
+		if sigmf:
+			rp = process_map(self._process_meas_sigmf, measurements, max_workers=os.cpu_count())
+		else:
+			rp = process_map(self._process_meas, measurements, max_workers=os.cpu_count())
 
 		return rp
 
-	def process_date(self, path, process_force=False, verbose=True):
+	def process_date(self, path, process_force=False, sigmf=False, verbose=True):
 		res_dir = f"../field_data/post-results/{path.split('/')[-1]}/"
 
 		if not os.path.exists(res_dir):
 			os.makedirs(res_dir)
 		
-		self.config = Config(path + "/config.yaml")
+		if sigmf:
+			meta = sigmffile.fromfile(glob.glob(path + "/*.sigmf-meta")[0])
+			self.config = Config("", sigmf=True)
+			self.config.sigmf_parser(meta)
+		else:
+			self.config = Config(path + "/config.yaml", sigmf=sigmf)
 		prcsd = {
 			"resultDir": [],
 			"meas": [],
@@ -187,7 +223,7 @@ class PostProcessor:
 		}
   
 		if not os.path.exists(res_dir + "processed.pkl") or process_force:
-			res = self._process(path)
+			res = self._process(path, sigmf=sigmf)
 			df = self._conv_arr_to_df(res)
 			df = df.convert_dtypes()
 			df = self._df_type_corr(df)
@@ -205,7 +241,10 @@ class PostProcessor:
 			if verbose:
 				print(f"Processing {path} measurement for the following experiments: \n")
 		else:
-			self.config = Config(path + "/config.yaml")
+			if sigmf:
+				self.config.sigmf_parser(meta)
+			else:
+				self.config = Config(path + "/config.yaml", sigmf=sigmf)
 			df = pd.read_pickle(res_dir + "processed.pkl")
 
 			freq = self.config.USRP_CONF.CENTER_FREQ / 1e6
@@ -218,11 +257,12 @@ class PostProcessor:
 			prcsd["meas"].append(df)
 			if verbose:
 				print(f"Mesaurement {path} already processed. Loading from cache.")
-   
+		print(f"{len(prcsd['meas'][0])} measurements from {path}.")
+		self.pp_data = prcsd
 		return prcsd
 
-	def process_dates(self, path, process_force=False):
-		self.get_exp_dir(path)
+	def process_dates(self, path, process_force=False, sigmf=False):
+		self.get_exp_dir(path, sigmf=sigmf)
 		prcsd = {
 				"resultDir": [],
 				"meas": [],
@@ -236,7 +276,7 @@ class PostProcessor:
 				if not os.path.exists(res_dir):
 					os.makedirs(res_dir)  
     
-				prc = self.process_date(m, process_force, False)
+				prc = self.process_date(m, process_force, False, sigmf=sigmf)
 				prcsd["resultDir"].append(prc["resultDir"][0])
 				prcsd["meas"].append(prc["meas"][0])
 				prcsd["config"].append(prc["config"][0])
@@ -400,11 +440,6 @@ class PostProcessor:
 		if save:
 			plt.savefig("../field_data/post-results/multiple_snr_vs_time.png")
 		plt.show()
-	
-  
-	
-    
-    
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -413,5 +448,9 @@ if __name__ == "__main__":
                         const="all",
                         nargs="?",
                         choices=["power_vs_distance", ""])
+    parser.add_argument("--sigmf", action="store_true")
     args = parser.parse_args()
+
+    pp = PostProcessor()
+    pp.process_dates(["../field_data/A2G_Channel_Measurements/2023-12-15_15_41/"], process_force=True, sigmf=args.sigmf)
 

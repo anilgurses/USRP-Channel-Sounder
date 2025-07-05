@@ -13,3 +13,6 @@ kaleido
 nbformat
 ipywidgets
 tables
+sigmf
+scikit-commpy
+galois

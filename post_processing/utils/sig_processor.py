@@ -148,7 +148,8 @@ class SigProcessor:
         """Correct the frequency offset in the received signal"""
         freq_shift = self.moose_alg(preamble, self.config.USRP_CONF.SAMPLE_RATE)
         Ts = 1/self.config.USRP_CONF.SAMPLE_RATE
-        t = np.arange(0, Ts*len(rcv) - Ts, Ts) 
+        # Might need to add - Ts
+        t = np.arange(0, Ts*len(rcv), Ts) 
         return freq_shift.flatten(), rcv * np.exp(-1j*2*np.pi*freq_shift*t)
 
     def getPreamble(self, rcv, peaks):
@@ -235,7 +236,7 @@ class SigProcessor:
         xcorr, _ = self.getCIR(rcv, self.ref_signal)
         peaks = self.getPeaks(xcorr)
         # For future reference
-         
+
         if len(peaks) == 0:
             return self.zeroMetric(vehicle_metric)
         
@@ -313,5 +314,4 @@ class SigProcessor:
         # 6 - Channel related metrics
         metrics.snr = np.array([self.calcSNR(rcv[peak:peak+_pr_len], self.ref_signal) for peak in peaks])
         metrics.avgSnr = np.mean(metrics.snr)
-        
         return metrics
