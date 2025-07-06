@@ -75,7 +75,6 @@ Then, you can use the following Python code to load the signal data:
 import numpy as np
 from sigmf import SigMFFile, sigmffile
 
-# Create a SigMFFile object from a .sigmf-meta file
 # Replace 'path/to/your/file.sigmf-meta' with the actual path to your metadata file
 signal = sigmffile.fromfile('path/to/your/file.sigmf-meta')
 
@@ -84,7 +83,7 @@ samples = signal.read_samples()
 
 # Alternatively, you can read the .sigmf-data file directly with numpy
 # Replace 'path/to/your/file.sigmf-data' with the actual path to your data file
-samples_direct = np.fromfile('path/to/your/file.sigmf-data', dtype=np.complex64) # Assuming complex64 data
+samples_direct = np.fromfile('path/to/your/file.sigmf-data', dtype=np.complex64)
 ```
 
 ## Cite 
