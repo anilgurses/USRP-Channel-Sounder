@@ -59,6 +59,21 @@ Optional flag:
 python3 main.py -c ../config/rx_config.yaml --plot
 ```
 
+## Dry Run (No USRP Required)
+
+Generate a waveform preview plot (time domain, PSD, spectrogram) directly from config:
+
+```bash
+cd sounder
+python3 dry_run_waveform.py -c ../config/tx_config.yaml -o ../plots/tx_dry_run.png
+```
+
+Optional: save generated complex samples:
+
+```bash
+python3 dry_run_waveform.py -c ../config/tx_config.yaml --save-npy ../plots/tx_dry_run.npy
+```
+
 ## Configuration Guide
 
 Both `config/tx_config.yaml` and `config/rx_config.yaml` use the same schema.
@@ -71,7 +86,9 @@ Key fields:
 - `USRP`: radio settings (`SERIAL`, `SAMPLE_RATE`, `CENTER_FREQ`, `GAIN`, clock/PPS refs).
 - `RECV_OPTS`: RX duration, power/path-loss options, output type (`npz`/`mat`).
 - `WAV_OPTS`: per-waveform parameters.
-- `GPS`: optional GNSS source for location/time metadata.
+  For OFDM:
+  `N_FFT`, `CP_LEN`, `SUBCARRIERS`, `N_PILOTS`, `DC_GUARD_BINS`, `EDGE_GUARD_BINS`, `SEED`, `NORMALIZE_PEAK`, `TARGET_PEAK`.
+- `GPS`: optional USB GPS receiver (serial device, e.g. `/dev/ttyACM0`) for location/time metadata.
 
 ## Output
 

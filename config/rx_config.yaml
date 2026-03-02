@@ -34,20 +34,26 @@ WAV_OPTS:
   PN:
     POLY: [1,0,0,0,0,1,1,0,1,1]
       # POLY: [1, 0, 0, 0, 0, 1, 0, 0, 1]
-      #SEQ_LEN: 255 # 2^{degree} - 1
+      # SEQ_LEN: 255 # 2^{degree} - 1
     SEQ_LEN: 1023
     COMPLEX_BB: true
   OFDM:
-    SUBCARRIERS: 512
-    N_PILOTS: 512
+    SUBCARRIERS: 492
+    N_PILOTS: 492
     N_FFT: 512
+    CP_LEN: 128
+    DC_GUARD_BINS: 9
+    EDGE_GUARD_BINS: 0
+    SEED: 2026
+    NORMALIZE_PEAK: true
+    TARGET_PEAK: 0.9
 USRP:
   #SERIAL: '32332EC'
   SERIAL: ''
   NUM_FRAMES: 60
   GAIN: 70
   SAMPLE_RATE: 5.6E+7
-  CENTER_FREQ: 3.564e+9
+  CENTER_FREQ: 3.4e+9
   INIT_DELAY: 0.5 # 0.05
   CLK_REF: EXT
   PPS_REF: EXT

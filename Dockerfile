@@ -28,7 +28,7 @@ RUN mkdir -p /root/dev/
 
 RUN git clone https://github.com/dronekit/dronekit-python
 RUN cd dronekit-python && python3 setup.py install && cd ..
-RUN python3 -m pip install cython pyyaml scikit-commpy spidev sparkfun-ublox-gps
+RUN python3 -m pip install cython pyyaml scikit-commpy sparkfun-ublox-gps
 
 
 WORKDIR /root/dev

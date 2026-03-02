@@ -1,14 +1,19 @@
 import numpy as np
 
 from scipy.signal import chirp, butter, sosfilt
-import commpy
-import galois
 
 
 class Waveform:
     # Make it more clear, add configs for waveforms
     def __init__(self, config):
         self.config = config
+
+    @staticmethod
+    def _deterministic_qpsk(n, seed):
+        rng = np.random.default_rng(int(seed))
+        symbols = rng.integers(0, 4, size=int(n), dtype=np.int32)
+        phase = (np.pi / 2.0) * symbols
+        return np.exp(1j * phase).astype(np.complex64)
 
     def create_zadoff_chu(self):
         """
@@ -19,6 +24,8 @@ class Waveform:
         zc_seq: np.complex64
 
         """
+        import commpy
+
         zc_seq = commpy.zcsequence(
             self.config.WAV_OPTS.ROOT_IND, self.config.WAV_OPTS.SEQ_LEN
         )
@@ -27,42 +34,86 @@ class Waveform:
 
     def create_OFDM(self):
         """
-        Generated OFDM waveform with all of pilot symbols
+        Generate a single OFDM symbol with cyclic prefix.
+        Note: This is experimental. I haven't fully tested it yet.
 
         Returns
         -----------
         OFDM_WAV: np.complex64
         """
-        K = self.config.WAV_OPTS.SUBCARRIERS  # Number of subcarriers
-        P = self.config.WAV_OPTS.N_PILOT  # Number of pilot subcarriers
-        N_FFT = self.config.WAV_OPTS.N_FFT
-        CP = K // 4
-        pilotValue = 1 + 1j
-        pilotValue_2 = -1 + 0j
-        allCarriers = np.arange(K)  # indices of all subcarriers ([0, 1, ... K-1])
+        n_fft = int(self.config.WAV_OPTS.N_FFT)
+        n_occupied = int(self.config.WAV_OPTS.SUBCARRIERS)
+        n_pilot = int(self.config.WAV_OPTS.N_PILOT)
+        cp_len = int(getattr(self.config.WAV_OPTS, "CP_LEN", n_fft // 4))
+        dc_guard_bins = int(getattr(self.config.WAV_OPTS, "DC_GUARD_BINS", 10))
+        edge_guard_bins = int(getattr(self.config.WAV_OPTS, "EDGE_GUARD_BINS", 0))
 
-        pilotCarriers = allCarriers[:: K // P]  # Pilots is every (K/P)th carrier.
-        s_pilotCarriers = pilotCarriers[::4]
-        
-        nullCarriers = [i-10 for i in range(20)]
+        if n_fft <= 0:
+            raise ValueError("OFDM N_FFT must be positive.")
+        if cp_len < 0 or cp_len >= n_fft:
+            raise ValueError("OFDM CP_LEN must satisfy 0 <= CP_LEN < N_FFT.")
+        if dc_guard_bins < 0 or edge_guard_bins < 0:
+            raise ValueError("OFDM guard bins must be non-negative.")
 
-        pilotCarriers = np.hstack([pilotCarriers, np.array([allCarriers[-1]])])
-        dataCarriers = np.delete(allCarriers, pilotCarriers)
+        # Signed-carrier indexing around DC: [..., -2, -1, +1, +2, ...]
+        # Keep Nyquist unallocated and reserve edge/DC guard bins.
+        pos_start = dc_guard_bins + 1
+        pos_stop = n_fft // 2 - edge_guard_bins
+        positive = np.arange(pos_start, pos_stop, dtype=np.int32)
+        if positive.size == 0:
+            raise ValueError("No usable OFDM carriers remain after guard allocation.")
 
-        symbol = np.zeros(K, dtype=complex)  # the overall K subcarriers
-        symbol[pilotCarriers] = pilotValue  # allocate the pilot subcarriers
-        symbol[s_pilotCarriers] = pilotValue_2  # allocate the pilot subcarriers
-        symbol[dataCarriers] = 0 + 0j  # allocate the data subcarriers
-        symbol[nullCarriers] = 0 + 0j  # allocate the null subcarriers
+        available_occupied = positive.size * 2
+        n_occupied = min(max(n_occupied, 0), available_occupied)
+        if n_occupied % 2 != 0:
+            n_occupied -= 1
+        n_pilot = min(max(n_pilot, 0), n_occupied)
+        if n_occupied == 0:
+            raise ValueError("SUBCARRIERS resolves to zero active OFDM carriers.")
 
-        OFDM_WAV = np.fft.ifft(symbol, N_FFT)
+        n_neg = n_occupied // 2
+        n_pos = n_occupied - n_neg
 
-        cp = OFDM_WAV[-CP:]  # take the last CP samples ...
-        OFDM_WAV = np.hstack([cp, OFDM_WAV])
-        # Scale the signal
-        # OFDM_WAV = OFDM_WAV / np.max(np.abs(OFDM_WAV))
-        # print(np.max(OFDM_WAV))
-        return OFDM_WAV.astype(np.complex64)
+        occupied = np.concatenate(
+            (-positive[:n_neg][::-1], positive[:n_pos]), axis=0
+        )
+
+        if n_pilot == occupied.size:
+            pilot_offsets = occupied
+        elif n_pilot == 0:
+            pilot_offsets = np.array([], dtype=np.int32)
+        else:
+            pilot_idx = np.linspace(0, occupied.size - 1, n_pilot, dtype=np.int32)
+            pilot_idx = np.unique(pilot_idx)
+            if pilot_idx.size < n_pilot:
+                missing = np.setdiff1d(
+                    np.arange(occupied.size, dtype=np.int32),
+                    pilot_idx,
+                    assume_unique=True,
+                )
+                pilot_idx = np.concatenate(
+                    (pilot_idx, missing[: n_pilot - pilot_idx.size]),
+                    axis=0,
+                )
+            pilot_offsets = occupied[pilot_idx]
+
+        ofdm_seed = int(getattr(self.config.WAV_OPTS, "SEED", 2026))
+        normalize_peak = bool(getattr(self.config.WAV_OPTS, "NORMALIZE_PEAK", True))
+        target_peak = float(getattr(self.config.WAV_OPTS, "TARGET_PEAK", 0.9))
+
+        ofdm_bins = np.zeros(n_fft, dtype=np.complex64)
+        if pilot_offsets.size > 0:
+            pilot_values = self._deterministic_qpsk(pilot_offsets.size, ofdm_seed)
+            ofdm_bins[pilot_offsets % n_fft] = pilot_values
+
+        ofdm_symbol = np.fft.ifft(ofdm_bins, n=n_fft).astype(np.complex64)
+        if normalize_peak:
+            peak = float(np.max(np.abs(ofdm_symbol)))
+            if peak > 0:
+                ofdm_symbol = ofdm_symbol / peak
+        ofdm_symbol = np.complex64(ofdm_symbol * target_peak)
+        cyclic_prefix = ofdm_symbol[-cp_len:] if cp_len > 0 else np.empty(0, dtype=np.complex64)
+        return np.concatenate((cyclic_prefix, ofdm_symbol), axis=0).astype(np.complex64)
 
     def create_GLFSR(self):
         """
@@ -73,6 +124,8 @@ class Waveform:
         pn_seq : np.complex64
 
         """
+        import galois
+
         poly = galois.Poly(self.config.WAV_OPTS.POLY)
         lfsr = galois.GLFSR(poly.reverse())
         pn_seq = lfsr.step(self.config.WAV_OPTS.SEQ_LEN)

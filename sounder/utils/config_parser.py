@@ -55,9 +55,16 @@ class Waveform:
     def __init__(self, type, wav_opts):
         self.type = type
 
-        self.SUBCARRIERS = wav_opts["OFDM"]["SUBCARRIERS"]
-        self.N_PILOT = wav_opts["OFDM"]["N_PILOTS"]
-        self.N_FFT = wav_opts["OFDM"]["N_FFT"]
+        ofdm_opts = wav_opts["OFDM"]
+        self.SUBCARRIERS = ofdm_opts["SUBCARRIERS"]
+        self.N_PILOT = ofdm_opts["N_PILOTS"]
+        self.N_FFT = ofdm_opts["N_FFT"]
+        self.CP_LEN = ofdm_opts.get("CP_LEN", int(self.N_FFT // 4))
+        self.DC_GUARD_BINS = ofdm_opts.get("DC_GUARD_BINS", 10)
+        self.EDGE_GUARD_BINS = ofdm_opts.get("EDGE_GUARD_BINS", 0)
+        self.SEED = ofdm_opts.get("SEED", 2026)
+        self.NORMALIZE_PEAK = ofdm_opts.get("NORMALIZE_PEAK", True)
+        self.TARGET_PEAK = ofdm_opts.get("TARGET_PEAK", 0.9)
 
         if type == "PN":
             self.SEQ_LEN = wav_opts["PN"]["SEQ_LEN"]
