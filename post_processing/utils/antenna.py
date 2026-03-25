@@ -54,6 +54,8 @@ class Antenna:
         x2, y2, z2 = Antenna.llh_to_ecef(lat2, lon2, h2)
         d = np.sqrt((x2 - x1)**2 + (y2 - y1)**2 + (z2-z1)**2)
         h = z2 - z1
+        if d == 0:
+            return 0
         return np.arctan(h/d)
     
     @classmethod
