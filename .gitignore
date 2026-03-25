@@ -1,5 +1,43 @@
+
 post_processing/utils/__pycache__/
-field_data/
-measurements/
 post_processing/.ipynb_checkpoints/
 post_processing/__pycache__/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Build artifacts
+build/
+dist/
+*.so
+*.egg-info/
+
+# Cython caches
+.pytest_cache/
+.mypy_cache/
+
+# Logs and runtime output
+logs/
+measurements/
+field_data/
+plots/
+*.npy
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Local env
+.venv/
+venv/
+.env
+
+# Tooling/local editor state
+cython_debug/
+*.swp
+*.swo
+
+# Mac OS files
+.DS_Store

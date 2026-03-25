@@ -34,23 +34,29 @@ WAV_OPTS:
   PN:
     POLY: [1,0,0,0,0,1,1,0,1,1]
       # POLY: [1, 0, 0, 0, 0, 1, 0, 0, 1]
-      #SEQ_LEN: 255 # 2^{degree} - 1
+      # SEQ_LEN: 255 # 2^{degree} - 1
     SEQ_LEN: 1023
     COMPLEX_BB: true
   OFDM:
-    SUBCARRIERS: 512
-    N_PILOTS: 512
+    SUBCARRIERS: 492
+    N_PILOTS: 492
     N_FFT: 512
+    CP_LEN: 128
+    DC_GUARD_BINS: 9
+    EDGE_GUARD_BINS: 0
+    SEED: 2026
+    NORMALIZE_PEAK: true
+    TARGET_PEAK: 0.9
 USRP:
   #SERIAL: '32332EC'
   SERIAL: ''
   NUM_FRAMES: 32
   GAIN: 64 
   SAMPLE_RATE: 5.6E+7
-  CENTER_FREQ: 3.564e+9
+  CENTER_FREQ: 3.4e+9
   INIT_DELAY: 2.0 # 0.05
-  CLK_REF: INT
-  PPS_REF: INT
+  CLK_REF: EXT
+  PPS_REF: EXT
 INTERPOLATION:
   ENABLED: false
   SPS: 8
@@ -58,7 +64,7 @@ INTERPOLATION:
   ROLLOFF: 0.35
   THR_OFF: 25
 GPS:
-  ENABLED: true
+  ENABLED: false
   SOURCE: gnss # or vehicle
   DIR: /dev/ttyACM1 
 NOTE: "TX note"

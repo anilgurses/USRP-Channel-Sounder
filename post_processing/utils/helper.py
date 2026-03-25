@@ -64,7 +64,7 @@ def process_date(path, cfg, ext_loc=None):
     # Parallel(n_jobs=20, require='sharedmem')(delayed(process_meas)(m, loc, d, cfg, tx_ant, rx_ant) for m in tqdm(measurements))
     return r
 
- def parseConfig(path):
+def parseConfig(path):
     with open(path, "r") as stream:
         config = yaml.safe_load(stream)
     return config

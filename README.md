@@ -1,99 +1,131 @@
-# Channel Sounder
+# USRP Channel Sounder
 
-This is a real-time channel sounder with different waveform options. It can easily be configured through the config files located under configs directory. 
+A configurable real-time channel sounder for USRP devices, with TX/RX runtime in `sounder/` and analysis tools in `post_processing/`.
 
-## Getting Started
+## Repository Layout
 
-There are 2 options to install channel sounder,
+- `sounder/`: runtime TX/RX code.
+- `config/`: example configuration files.
+- `post_processing/`: analysis scripts and notebooks.
+- `requirements.txt`: runtime Python dependencies.
+- `post_processing/requirements.txt`: analysis dependencies.
 
-### With Docker
+## Prerequisites
 
+- Linux machine with UHD-compatible USRP hardware.
+- UHD driver 
+- Python 3.10+ recommended.
+- Build tools for Cython compilation (the RX module is `ChsRX.pyx`).
+
+## Setup
+
+### Option 1: Native install
+
+```bash
+sudo apt-get update -y
+sudo apt-get install -y libuhd-dev uhd-host python3-dev build-essential
+uhd_images_downloader
+
+python3 -m pip install -r requirements.txt
 ```
-# Network Host option can be ignored
-$ sudo docker build --network=host -t ch-sounder .
-$ sudo docker run -dit --network=host --privileged -v /dev:/dev --name sounder ch-sounder
-$ sudo docker exec -it sounder bash
-$ cd sounder
-$ python3 main.py -c ../config/tx_config.yaml 
+
+### Option 2: Docker
+
+```bash
+sudo docker build --network=host -t ch-sounder .
+sudo docker run -dit --network=host --privileged -v /dev:/dev --name sounder ch-sounder
+sudo docker exec -it sounder bash
 ```
 
-### Without Docker
+## Running the Sounder
 
-If you choose not to use Docker, you can do it by installing all the dependencies. 
- 
-```
-$ sudo apt-get update -y 
-$ sudo apt-get install libuhd-dev uhd-host
-$ uhd_images_downloader
-$ python3 -m pip install -r requirements.txt
-$ cd sounder
-$ python3 main.py -c ../config/tx_config.yaml 
-```
-
-Dataset link: https://datadryad.org/dataset/doi:10.5061/dryad.7h44j105p
-
-## USAGE 
-
-### Running the Channel Sounder
-
-To run the channel sounder, navigate to the `sounder` directory and execute `main.py` with a configuration file:
+Run from the `sounder/` directory:
 
 ```bash
 cd sounder
-python3 main.py -c ../config/tx_config.yaml 
+python3 main.py -c ../config/tx_config.yaml
 ```
 
-Replace `../config/tx_config.yaml` with the appropriate configuration file for your use case (e.g., `rx_config.yaml`).
+For RX mode:
 
-## Post Processing
+```bash
+cd sounder
+python3 main.py -c ../config/rx_config.yaml
+```
 
-The `post_processing` directory contains several Jupyter notebooks for analyzing and visualizing the collected data. To run these notebooks, you'll need to install the dependencies listed in `post_processing/requirements.txt`:
+Optional flag:
+
+```bash
+python3 main.py -c ../config/rx_config.yaml --plot
+```
+
+## Dry Run (No USRP Required)
+
+Generate a waveform preview plot (time domain, PSD, spectrogram) directly from config:
+
+```bash
+cd sounder
+python3 dry_run_waveform.py -c ../config/tx_config.yaml -o ../plots/tx_dry_run.png
+```
+
+Optional: save generated complex samples:
+
+```bash
+python3 dry_run_waveform.py -c ../config/tx_config.yaml --save-npy ../plots/tx_dry_run.npy
+```
+
+## Configuration Guide
+
+Both `config/tx_config.yaml` and `config/rx_config.yaml` use the same schema.
+
+Key fields:
+
+- `MODE`: `TX` or `RX`.
+- `PERIOD`: burst scheduling rate (bursts per second).
+- `WAVEFORM`: `ZC`, `PN`, or `CHIRP`.
+- `USRP`: radio settings (`SERIAL`, `SAMPLE_RATE`, `CENTER_FREQ`, `GAIN`, clock/PPS refs).
+- `RECV_OPTS`: RX duration, power/path-loss options, output type (`npz`/`mat`).
+- `WAV_OPTS`: per-waveform parameters.
+  For OFDM:
+  `N_FFT`, `CP_LEN`, `SUBCARRIERS`, `N_PILOTS`, `DC_GUARD_BINS`, `EDGE_GUARD_BINS`, `SEED`, `NORMALIZE_PEAK`, `TARGET_PEAK`.
+- `GPS`: optional USB GPS receiver (serial device, e.g. `/dev/ttyACM0`) for location/time metadata.
+
+## Output
+
+RX captures are written under:
+
+- `measurements/YYYY-MM-DD_HH_MM/`
+
+Each directory includes:
+
+- `config.yaml`: config snapshot.
+- `received_<timestamp>.npz` or `received_<timestamp>.mat`: measurement files.
+
+## Post-processing
+
+Install analysis dependencies:
 
 ```bash
 pip install -r post_processing/requirements.txt
 ```
 
-### Notebooks
+Use notebooks in `post_processing/`:
 
-*   **Antenna.ipynb**: Visualizes antenna radiation patterns.
-*   **PostProcess.ipynb**: Performs post-processing on the collected data, including channel estimation and path loss analysis.
-*   **RX_review.ipynb**: Reviews and analyzes the received signal data.
-*   **SigMF_conv.ipynb**: Converts the data to SigMF format.
-*   **SigMF_demo.ipynb**: Demonstrates how to read and work with SigMF files.
+- `PostProcess.ipynb`
+- `RX_review.ipynb`
+- `SigMF_conv.ipynb`
+- `SigMF_demo.ipynb`
+- `Antenna.ipynb`
 
-#### Improviser's Path: Reading SigMF Data Files
+## Dataset
 
-The dataset provided (link above) contains SigMF formatted files. If you prefer to not use my post processing script and work on raw I/Q data, you can do so by reading the raw I/Q data files directly. To read these files in Python, you'll need the `sigmf` and `numpy` libraries. Install them using pip:
+Dryad dataset:
 
-```bash
-pip install sigmf numpy
-```
+- https://datadryad.org/dataset/doi:10.5061/dryad.7h44j105p
 
-Then, you can use the following Python code to load the signal data:
+## Citation
 
-```python
-import numpy as np
-from sigmf import SigMFFile, sigmffile
-
-# Replace 'path/to/your/file.sigmf-meta' with the actual path to your metadata file
-signal = sigmffile.fromfile('path/to/your/file.sigmf-meta')
-
-# Read the samples
-samples = signal.read_samples()
-
-# Alternatively, you can read the .sigmf-data file directly with numpy
-# Replace 'path/to/your/file.sigmf-data' with the actual path to your data file
-samples_direct = np.fromfile('path/to/your/file.sigmf-data', dtype=np.complex64)
-```
-
-## Cite 
-
-If you use this channel sounder or the associated dataset in your research, please cite the following:
-
-
-
-
-```
+```bibtex
 @inproceedings{gurses2024air,
   author    = {A. G{\"u}rses and M. L. Sichitiu},
   title     = {Air-to-Ground Channel Modeling for UAVs in Rural Areas},
@@ -105,3 +137,9 @@ If you use this channel sounder or the associated dataset in your research, plea
   publisher = {IEEE}
 }
 ```
+
+## Troubleshooting
+
+- If `ChsRX` import fails, ensure `python3-dev`, `build-essential`, `cython`, and `numpy` are installed.
+- If external/GPS lock never completes, verify clock/PPS cabling and matching `CLK_REF`/`PPS_REF` settings.
+- Use `logs/out.log` for runtime diagnostics.

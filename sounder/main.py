@@ -1,184 +1,118 @@
-import uhd
-from utils.config_parser import Config
-from utils.logger import Logger
-from usrp_utils import createMultiUSRP, init_sync
-import sys
-import time
-import threading
-from multiprocessing import Process, Manager, Lock
 import argparse
 import signal
-import pyximport
+import threading
+import time
+from multiprocessing import Manager, Process
 
-# import Plotter
+import pyximport
+import uhd
 
 pyximport.install(setup_args={"script_args": ["--verbose"]})
 
 from ChsTX import Transmitter
 from ChsRX import Receiver
+from usrp_utils import createMultiUSRP, init_sync
+from utils.config_parser import Config
+from utils.logger import Logger
 
 terminate_event = threading.Event()
-time_set = False
-usrp = None
 
 
-def signal_handling(signum, frame):
-    global terminate_event
+def signal_handling(_signum, _frame):
     terminate_event.set()
-    sys.exit(0)
 
 
-def main(args):
-    global terminate_event, usrp
-
-    # TODO make it one config file
-    config = Config(args.config)
-
-    # usrp.get_tx_power_reference()
-    signal.signal(signal.SIGINT, signal_handling)
-
-    # Only one device can be used for this script.
-    if config.MODE == "TX":
-        usrp = createMultiUSRP(config)
-    elif config.MODE == "RX":
-        usrp = createMultiUSRP(config)
-    # elif config.mode == "BOTH":
-    #     usrp = createMultiUSRP(config)
-    else:
-        sys.exit(1)
-
-    logger = Logger()
-    logger.info(f"Using the Device: {usrp.get_pp_string()}")
-
+def configure_usrp(usrp, config):
     usrp.set_rx_rate(config.USRP_CONF.SAMPLE_RATE, 0)
     usrp.set_tx_rate(config.USRP_CONF.SAMPLE_RATE, 0)
 
     usrp.clear_command_time()
-    # Add delay info to yaml
     usrp.set_command_time(usrp.get_time_now() + uhd.types.TimeSpec(0.1))
-
     usrp.set_rx_freq(uhd.libpyuhd.types.tune_request(config.USRP_CONF.CENTER_FREQ), 0)
     usrp.set_tx_freq(uhd.libpyuhd.types.tune_request(config.USRP_CONF.CENTER_FREQ), 0)
-
     usrp.set_rx_gain(config.USRP_CONF.GAIN, 0)
     usrp.set_tx_gain(config.USRP_CONF.GAIN, 0)
+    usrp.clear_command_time()
+    time.sleep(0.1)  # Allow LO to lock.
 
+
+def main(args):
+    terminate_event.clear()
+    logger = Logger()
+    signal.signal(signal.SIGINT, signal_handling)
+
+    config = Config(args.config)
+    if config.MODE not in {"TX", "RX"}:
+        logger.err("Unsupported MODE '%s'. Use TX or RX.", config.MODE)
+        return 1
+
+    usrp = createMultiUSRP(config)
+    logger.info("Using the Device: %s", usrp.get_pp_string())
+
+    configure_usrp(usrp, config)
+    init_sync(config, usrp, logger)
     usrp.clear_command_time()
 
-    time.sleep(0.1)  # Allowing LO to lock on the freq
-
-    init_sync(config, usrp, logger)
-
-    m = Manager()
-    rcv_queue = m.Queue()
-    pwr_queue = m.Queue()
+    stream_args = uhd.usrp.StreamArgs("fc32", "sc16")
+    stream_args.channels = [0]
 
     threads = []
+    rcv_prc = None
 
-    st_args = uhd.usrp.StreamArgs("fc32", "sc16")
+    with Manager() as manager:
+        rcv_queue = manager.Queue()
+        pwr_queue = manager.Queue()
 
-    st_args.channels = [0]
+        if config.MODE == "TX":
+            transmitter = Transmitter(config)
+            tx_streamer = usrp.get_tx_stream(stream_args)
+            tx_thread = threading.Thread(
+                target=transmitter.transmit,
+                name="tx-thread",
+                args=(usrp, tx_streamer, logger, terminate_event),
+            )
+            threads.append(tx_thread)
+            tx_thread.start()
+        else:
+            receiver = Receiver(config, args.plot)
+            rx_streamer = usrp.get_rx_stream(stream_args)
+            rx_thread = threading.Thread(
+                target=receiver.receive,
+                name="rx-thread",
+                args=(usrp, rx_streamer, logger, rcv_queue, terminate_event, args),
+            )
+            threads.append(rx_thread)
+            rx_thread.start()
 
-    lock = Lock()
+            rcv_prc = Process(
+                target=receiver.process_recv_data,
+                args=(rcv_queue, pwr_queue, logger, terminate_event),
+            )
+            rcv_prc.start()
 
-    if config.MODE == "TX":
-        transmitter = Transmitter(config)
-        tx_streamer = usrp.get_tx_stream(st_args)
-        init_sync(config, usrp, logger)
-        usrp.clear_command_time()
-        tx_thread = threading.Thread(
-            target=transmitter.transmit,
-            args=(usrp, tx_streamer, logger, terminate_event),
-        )
-        threads.append(tx_thread)
-        tx_thread.start()
+        for thread in threads:
+            thread.join()
 
-    elif config.MODE == "RX":
-        receiver = Receiver(config, args.plot) 
-        rx_streamer = usrp.get_rx_stream(st_args)
-        init_sync(config, usrp, logger) 
-        usrp.clear_command_time()
-        rx_thread = threading.Thread(
-            target=receiver.receive,
-            args=(usrp, rx_streamer, logger, rcv_queue, terminate_event, args),
-        )
-        threads.append(rx_thread)
-        rx_thread.start()
+        if rcv_prc is not None:
+            rcv_prc.join()
 
-        rcv_prc = Process(
-            target=receiver.process_recv_data,
-            args=(rcv_queue, pwr_queue, logger, terminate_event),
-        )
-        rcv_prc.start()
-
-    # elif args.mode == "BOTH":
-    #     tx_streamer = usrp.get_tx_stream(st_args)
-    #     tx_thread = threading.Thread(
-    #         target=transmitter.transmit,
-    #         args=(usrp, tx_streamer, logger, terminate_event),
-    #     )
-    #     threads.append(tx_thread)
-    #     tx_thread.start()
-    #
-    #     rx_streamer = usrp.get_rx_stream(st_args)
-    #     rx_thread = threading.Thread(
-    #         target=receiver.receive,
-    #         args=(usrp, rx_streamer, logger, rcv_queue, terminate_event, args),
-    #     )
-    #     threads.append(rx_thread)
-    #     rx_thread.start()
-    #
-    #     # Since both transmit and receive, on the same device, 3 process created for avoiding overruns
-    #     rcv_prc = Process(
-    #         target=receiver.process_recv_data,
-    #         args=(rcv_queue, pwr_queue, logger, terminate_event, lock),
-    #     )
-    #     rcv_prc_1 = Process(
-    #         target=receiver.process_recv_data,
-    #         args=(rcv_queue, pwr_queue, logger, terminate_event, lock),
-    #     )
-    #     rcv_prc_2 = Process(
-    #         target=receiver.process_recv_data,
-    #         args=(rcv_queue, pwr_queue, logger, terminate_event, lock),
-    #     )
-    #     rcv_prc.start()
-    #     rcv_prc_1.start()
-    #     rcv_prc_2.start()
-    else:
-        sys.exit(1)
-
-    # if args.plot:
-    #     plotter_proc = Process(target=Plotter.Graph, args=(pwr_queue,))
-    #     plotter_proc.start()
-
-    for thr in threads:
-        thr.join()
-
-    if config.MODE == "RX":
-        rcv_prc.join()
-
-    # if args.plot:
-    #     plotter_proc.join()
-
-    return True
+    return 0
 
 
 if __name__ == "__main__":
-    logger = Logger()
-
-    logger.info("Started")
-
-    parser = argparse.ArgumentParser(description="Process some integers.")
-    parser.add_argument("--plot", type=bool, default=False, help="Plotting the metrics")
-
+    parser = argparse.ArgumentParser(description="USRP channel sounder runner")
+    parser.add_argument(
+        "--plot",
+        action="store_true",
+        help="Enable plotting hooks where supported.",
+    )
     parser.add_argument(
         "-c",
         "--config",
         type=str,
         default="../config/rx_config.yaml",
-        help="Config file",
+        help="Path to YAML config file.",
     )
 
-    args = parser.parse_args()
-
-    sys.exit(not main(args))
+    parsed_args = parser.parse_args()
+    raise SystemExit(main(parsed_args))
