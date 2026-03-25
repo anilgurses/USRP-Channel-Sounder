@@ -1,3 +1,8 @@
+
+post_processing/utils/__pycache__/
+post_processing/.ipynb_checkpoints/
+post_processing/__pycache__/
+
 # Python
 __pycache__/
 *.py[cod]
@@ -17,7 +22,7 @@ dist/
 # Logs and runtime output
 logs/
 measurements/
-field_data/post-results/
+field_data/
 plots/
 *.npy
 
@@ -34,5 +39,5 @@ cython_debug/
 *.swp
 *.swo
 
-# OS files
+# Mac OS files
 .DS_Store

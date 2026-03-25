@@ -2,6 +2,7 @@ from dataclasses import dataclass, asdict, field
 import numpy as np
 from geopy.distance import geodesic
 import time
+from scipy import signal
 
 from utils.constants import *
 from utils.freq_sync import *
@@ -56,16 +57,19 @@ class SignalMetric:
     shadowing: int = 0
     multipath: int = 0
     delay: int = 0
-    doppler: int = 0
+    doppler_shift: np.float32 = 0.0
+    doppler_spectrum: np.ndarray = field(default_factory=lambda: np.array([]))
+    rms_delay_spread: np.float32 = 0.0
+    k_factor: np.float32 = 0.0
     
     def __init__(self) -> None:
         pass
     
     def __str__(self) -> str:
-        return f"SignalMetric: time={self.time}, center_freq={self.center_freq}, dist={self.dist}, h_dist={self.h_dist}, v_dist={self.v_dist}, wav_type={self.wav_type}, detected={self.detected}, snr={self.snr}, rsrp={self.rsrp}, power={self.power}, avgPower={self.avgPower}, freq_offset={self.freq_offset}, path_loss={self.path_loss}, avg_pl={self.avg_pl}, shadowing={self.shadowing}, multipath={self.multipath}, delay={self.delay}, doppler={self.doppler}, est_dist={self.est_dist}, peaks={self.peaks}, vehicle={self.vehicle}, corr={self.corr}, save_corr={self.save_corr}"
+        return f"SignalMetric: time={self.time}, center_freq={self.center_freq}, dist={self.dist}, h_dist={self.h_dist}, v_dist={self.v_dist}, wav_type={self.wav_type}, detected={self.detected}, snr={self.snr}, rsrp={self.rsrp}, power={self.power}, avgPower={self.avgPower}, freq_offset={self.freq_offset}, path_loss={self.path_loss}, avg_pl={self.avg_pl}, shadowing={self.shadowing}, multipath={self.multipath}, delay={self.delay}, doppler_shift={self.doppler_shift}, est_dist={self.est_dist}, peaks={self.peaks}, vehicle={self.vehicle}, corr={self.corr}, save_corr={self.save_corr}"
     
     def __repr__(self) -> str:
-        return f"SignalMetric: time={self.time}, center_freq={self.center_freq}, dist={self.dist}, h_dist={self.h_dist}, v_dist={self.v_dist}, wav_type={self.wav_type}, detected={self.detected}, snr={self.snr}, rsrp={self.rsrp}, power={self.power}, avgPower={self.avgPower}, freq_offset={self.freq_offset}, path_loss={self.path_loss}, avg_pl={self.avg_pl}, shadowing={self.shadowing}, multipath={self.multipath}, delay={self.delay}, doppler={self.doppler}, est_dist={self.est_dist}, peaks={self.peaks}, vehicle={self.vehicle}, corr={self.corr}, save_corr={self.save_corr}"
+        return f"SignalMetric: time={self.time}, center_freq={self.center_freq}, dist={self.dist}, h_dist={self.h_dist}, v_dist={self.v_dist}, wav_type={self.wav_type}, detected={self.detected}, snr={self.snr}, rsrp={self.rsrp}, power={self.power}, avgPower={self.avgPower}, freq_offset={self.freq_offset}, path_loss={self.path_loss}, avg_pl={self.avg_pl}, shadowing={self.shadowing}, multipath={self.multipath}, delay={self.delay}, doppler_shift={self.doppler_shift}, est_dist={self.est_dist}, peaks={self.peaks}, vehicle={self.vehicle}, corr={self.corr}, save_corr={self.save_corr}"
 
     # Not needed anymore
     def __to_dict__(self):
@@ -77,10 +81,8 @@ class SignalMetric:
         return dct
 
 class SigProcessor:
-    """_summary_
-        Received signal processor
-    """
-    def __init__(self, config, wav1, wav2, total_len) -> None:
+    """Received signal processor"""
+    def __init__(self, config, wav1, wav2, total_len, interpolate_rate=1) -> None:
         # Parameters that are required for calculation
         self.config = config 
         self.ref_signal = wav1
@@ -88,6 +90,7 @@ class SigProcessor:
         ## TODO: replace with frame_len
         self.total_len = total_len 
         self.start_point = np.inf
+        self.interpolate_rate = interpolate_rate
     
     def getIndex(self, cir):
         return np.argmax(cir)
@@ -144,13 +147,86 @@ class SigProcessor:
         freq_shift = np.squeeze(np.array(freq_shift))
         return freq_shift
     
-    def correctFreq(self, rcv, preamble):
+    def correctFreq(self, rcv, freq_shift):
         """Correct the frequency offset in the received signal"""
-        freq_shift = self.moose_alg(preamble, self.config.USRP_CONF.SAMPLE_RATE)
         Ts = 1/self.config.USRP_CONF.SAMPLE_RATE
         # Might need to add - Ts
-        t = np.arange(0, Ts*len(rcv), Ts) 
-        return freq_shift.flatten(), rcv * np.exp(-1j*2*np.pi*freq_shift*t)
+        t = np.arange(len(rcv)) * Ts 
+        return rcv * np.exp(-1j*2*np.pi*freq_shift*t)
+
+    def calcDoppler(self, rcv):
+        """Calculate the Doppler spectrum of the received signal"""
+        nyquist = self.config.USRP_CONF.SAMPLE_RATE / 2
+        # Cutoff frequency (56 MHz / 2 = 28 MHz)
+        cutoff = 28e6
+        
+        # Check if cutoff is possible
+        if cutoff >= nyquist:
+            # Cannot filter, use original signal
+            f, Pxx = signal.welch(rcv, self.config.USRP_CONF.SAMPLE_RATE, nperseg=1024, return_onesided=False)
+            return f, Pxx
+
+        # Design the filter
+        numtaps = 101
+        taps = signal.firwin(numtaps, cutoff, fs=self.config.USRP_CONF.SAMPLE_RATE)
+
+        # Apply the filter
+        filtered_rcv = signal.lfilter(taps, 1.0, rcv)
+
+        f, Pxx = signal.welch(filtered_rcv, self.config.USRP_CONF.SAMPLE_RATE, nperseg=1024, return_onesided=False)
+        return f, Pxx
+
+    def _threshold_pdp(self, power_pdp, noise_floor, noise_margin_db=3):
+        # Set threshold a few dB above the provided noise floor
+        threshold = noise_floor * 10**(noise_margin_db / 10)
+
+        # Any power level below the threshold is noise
+        power_pdp[power_pdp < threshold] = 0
+        return power_pdp
+
+    def calcRMSDelaySpread(self, cir, sample_rate, noise_floor, noise_margin_db=3):
+        power_pdp = np.abs(cir)**2
+        power_pdp = self._threshold_pdp(power_pdp, noise_floor, noise_margin_db)
+        
+        # Find first and last path
+        paths = np.where(power_pdp > 0)[0]
+        if len(paths) == 0:
+            return 0.0
+        first_path_idx = paths[0]
+        last_path_idx = paths[-1]
+        
+        # Crop PDP to only include paths
+        power_pdp_cropped = power_pdp[first_path_idx:last_path_idx+1]
+        
+        total_power = np.sum(power_pdp_cropped)
+        if total_power == 0:
+            return 0.0
+            
+        time_delays = np.arange(len(power_pdp_cropped)) / sample_rate
+        
+        mean_delay = np.sum(time_delays * power_pdp_cropped) / total_power
+        
+        rms_delay_spread = np.sqrt(np.sum(((time_delays - mean_delay)**2) * power_pdp_cropped) / total_power)
+        
+        return rms_delay_spread
+
+    def calcKFactor(self, cir, noise_floor, noise_margin_db=3):
+        power_pdp = np.abs(cir)**2
+        power_pdp = self._threshold_pdp(power_pdp, noise_floor, noise_margin_db)
+
+        if not power_pdp.any():
+            return 0.0
+        
+        los_peak_idx = np.argmax(power_pdp)
+        los_power = power_pdp[los_peak_idx]
+        
+        nlos_power = np.sum(power_pdp) - los_power
+        
+        if nlos_power == 0:
+            return np.inf # Or a large number, as it means pure LoS
+            
+        k_factor = los_power / nlos_power
+        return 10 * np.log10(k_factor)
 
     def getPreamble(self, rcv, peaks):
         preamble = rcv[peaks[0]:peaks[0]+self.config.WAV_OPTS.SEQ_LEN*2]
@@ -203,7 +279,10 @@ class SigProcessor:
         sgnlMetric.shadowing = 0
         sgnlMetric.multipath = 0
         sgnlMetric.delay = 0
-        sgnlMetric.doppler = 0
+        sgnlMetric.doppler_shift = 0.0
+        sgnlMetric.doppler_spectrum = np.array([])
+        sgnlMetric.rms_delay_spread = 0.0
+        sgnlMetric.k_factor = 0.0
         return sgnlMetric
     
     # Shift the CIR by the offset value 
@@ -214,7 +293,7 @@ class SigProcessor:
         return cir
     
     
-    def process(self, r_time, rcv, vehicle_metric, save_corr=True):
+    def process(self, r_time, rcv, vehicle_metric, tx_vehicle_metric=None, save_corr=True):
         """Process the received signal step by step"""
         metrics = SignalMetric()
         
@@ -231,20 +310,57 @@ class SigProcessor:
             ## Making sure that signal exists
             return self.zeroMetric(vehicle_metric)
         
-        preamble = self.getPreamble(rcv, peaks)
-        freq_shift, rcv = self.correctFreq(rcv, preamble)
-        xcorr, _ = self.getCIR(rcv, self.ref_signal)
-        peaks = self.getPeaks(xcorr)
+        # Coarse frequency estimation
+        preamble_coarse = self.getPreamble(rcv, peaks)
+        freq_shift_coarse = self.moose_alg(preamble_coarse, self.config.USRP_CONF.SAMPLE_RATE)
+        rcv_coarse_corrected = self.correctFreq(rcv, freq_shift_coarse)
+
+        # Fine frequency estimation
+        xcorr_fine, _ = self.getCIR(rcv_coarse_corrected, self.ref_signal)
+        peaks_fine = self.getPeaks(xcorr_fine)
+
+        if len(peaks_fine) == 0:
+            # Correction failed, use coarse estimate
+            freq_shift = freq_shift_coarse
+            rcv = rcv_coarse_corrected
+            xcorr = xcorr_fine
+            peaks = peaks_fine
+        else:
+            preamble_fine = self.getPreamble(rcv_coarse_corrected, peaks_fine)
+            freq_shift_fine = self.moose_alg(preamble_fine, self.config.USRP_CONF.SAMPLE_RATE)
+            
+            freq_shift = freq_shift_coarse + freq_shift_fine
+            
+            # Correct original rcv with total frequency shift
+            rcv = self.correctFreq(rcv, freq_shift)
+            
+            # Recalculate xcorr and peaks with the fully corrected rcv
+            xcorr, _ = self.getCIR(rcv, self.ref_signal)
+            peaks = self.getPeaks(xcorr)
+
         # For future reference
 
         if len(peaks) == 0:
             return self.zeroMetric(vehicle_metric)
         
+        # Experimental
+        # --- Interpolation Logic ---
+        cir_for_delay_spread = xcorr
+        sample_rate_for_delay_spread = self.config.USRP_CONF.SAMPLE_RATE
+
+        if self.interpolate_rate > 1:
+            interp_rcv = signal.resample(rcv, len(rcv) * self.interpolate_rate)
+            interp_ref = signal.resample(self.ref_signal, len(self.ref_signal) * self.interpolate_rate)
+            
+            cir_for_delay_spread, _ = self.getCIR(interp_rcv, interp_ref)
+            sample_rate_for_delay_spread = self.config.USRP_CONF.SAMPLE_RATE * self.interpolate_rate
+        # --- End Interpolation Logic ---
+
         first_peak = peaks[0]
         metrics.start_point = first_peak
         metrics.detected = True
         
-        metrics.freq_offset = freq_shift[0]
+        metrics.freq_offset = freq_shift
         metrics.orig_peaks = peaks
 
         _crop_num_samples = peaks[0] if CIR_OFFSET > peaks[0] else CIR_OFFSET
@@ -266,6 +382,8 @@ class SigProcessor:
         # 2 - Calculate the power of the signal
         _pr_len = len(self.ref_signal)
         
+        peaks = [p for p in peaks if p + _pr_len <= len(rcv)]
+
         metrics.power = np.array([self.calcPowerdBm(rcv[peak:peak+_pr_len]) for peak in peaks])
             
         if metrics.power.any(): 
@@ -291,10 +409,30 @@ class SigProcessor:
         
         # 5 - Vehicle related metrics
         metrics.vehicle = vehicle_metric
-        metrics.h_dist = np.float32(geodesic(LW1, (vehicle_metric.lat, vehicle_metric.lon)).meters)
-        metrics.v_dist = np.abs(vehicle_metric.alt - H_TOWER_LW1)
-        metrics.dist = np.sqrt(metrics.h_dist**2 + metrics.v_dist**2)
-        
+        if tx_vehicle_metric:
+            tx_loc = (tx_vehicle_metric.lat, tx_vehicle_metric.lon)
+            rx_loc = (vehicle_metric.lat, vehicle_metric.lon)
+            metrics.h_dist = np.float32(geodesic(tx_loc, rx_loc).meters)
+            metrics.v_dist = np.abs(vehicle_metric.alt - tx_vehicle_metric.alt)
+            metrics.dist = np.sqrt(metrics.h_dist**2 + metrics.v_dist**2)
+            if metrics.est_dist < metrics.dist - 50 or metrics.est_dist > metrics.dist + 50:
+                return self.zeroMetric(vehicle_metric)
+            metrics.aod_phi = Antenna.get_elevation_angle(vehicle_metric.lat, vehicle_metric.lon, tx_vehicle_metric.lat, tx_vehicle_metric.lon, vehicle_metric.alt, tx_vehicle_metric.alt)
+            metrics.aod_theta = Antenna.get_azimuth_angle(vehicle_metric.lat, vehicle_metric.lon, tx_vehicle_metric.lat, tx_vehicle_metric.lon)
+            metrics.aoa_phi = Antenna.get_elevation_angle(tx_vehicle_metric.lat, tx_vehicle_metric.lon, vehicle_metric.lat, vehicle_metric.lon, tx_vehicle_metric.alt, vehicle_metric.alt)
+            metrics.aoa_theta = Antenna.get_azimuth_angle(tx_vehicle_metric.lat, tx_vehicle_metric.lon, vehicle_metric.lat, vehicle_metric.lon)
+        else:
+            metrics.h_dist = np.float32(geodesic(LW1, (vehicle_metric.lat, vehicle_metric.lon)).meters)
+            metrics.v_dist = np.abs(vehicle_metric.alt - H_TOWER_LW1)
+            metrics.dist = np.sqrt(metrics.h_dist**2 + metrics.v_dist**2)
+            metrics.aod_phi = Antenna.get_elevation_angle(vehicle_metric.lat, vehicle_metric.lon, LW1[0], LW1[1], vehicle_metric.alt, H_TOWER_LW1)
+            metrics.aod_theta = Antenna.get_azimuth_angle(vehicle_metric.lat, vehicle_metric.lon, LW1[0], LW1[1])
+            metrics.aoa_phi = Antenna.get_elevation_angle(LW1[0], LW1[1], vehicle_metric.lat, vehicle_metric.lon, H_TOWER_LW1, vehicle_metric.alt)
+            metrics.aoa_theta = Antenna.get_azimuth_angle(LW1[0], LW1[1], vehicle_metric.lat, vehicle_metric.lon)
+
+        if abs(metrics.est_dist) < 1: # Check if est_dist is close to 0
+            return self.zeroMetric(vehicle_metric)
+
         if vehicle_metric.vel_z < TO_THRESHOLD and vehicle_metric.vel_z > -TO_THRESHOLD:
             metrics.stage = "Flight"
         elif vehicle_metric.vel_z > TO_THRESHOLD:
@@ -302,16 +440,45 @@ class SigProcessor:
         else:
             metrics.stage = "Landing"
         
-        # Update the tower parameter with configuration
-        metrics.aod_phi = Antenna.get_elevation_angle(vehicle_metric.lat, vehicle_metric.lon, LW1[0], LW1[1], vehicle_metric.alt, H_TOWER_LW1)
-        metrics.aod_theta = Antenna.get_azimuth_angle(vehicle_metric.lat, vehicle_metric.lon, LW1[0], LW1[1])
-        
-        ## It's mirror of aod
-        metrics.aoa_phi = Antenna.get_elevation_angle(LW1[0], LW1[1], vehicle_metric.lat, vehicle_metric.lon, H_TOWER_LW1, vehicle_metric.alt)
-        metrics.aoa_theta = Antenna.get_azimuth_angle(LW1[0], LW1[1], vehicle_metric.lat, vehicle_metric.lon)
-               
-               
         # 6 - Channel related metrics
         metrics.snr = np.array([self.calcSNR(rcv[peak:peak+_pr_len], self.ref_signal) for peak in peaks])
         metrics.avgSnr = np.mean(metrics.snr)
+
+        # 7 - Doppler
+        f, Pxx = self.calcDoppler(rcv)
+        metrics.doppler_shift = metrics.freq_offset
+        metrics.doppler_spectrum = Pxx
+
+        # 8 - RMS Delay Spread and K-Factor
+        # Find the main peak in the CIR used for delay spread
+        max_peak_index = np.argmax(np.abs(cir_for_delay_spread))
+
+        # Define the window size, scaled by interpolation rate
+        # Use a smaller window (~2 μs) appropriate for typical delay spreads
+        window_size = 100 * self.interpolate_rate
+        half_window = window_size // 2
+
+        start_crop = max(0, max_peak_index - half_window)
+        end_crop = min(len(cir_for_delay_spread), max_peak_index + half_window)
+
+        # Crop the CIR to focus on the channel response of a single transmission
+        cropped_cir = cir_for_delay_spread[start_crop:end_crop]
+
+        # Estimate noise floor from AFTER the signal window (not from edge effects at the start)
+        noise_start = end_crop + 100 * self.interpolate_rate
+        noise_end = noise_start + 200 * self.interpolate_rate
+        if noise_end < len(cir_for_delay_spread):
+            noise_floor_pdp = np.mean(np.abs(cir_for_delay_spread[noise_start:noise_end])**2)
+        else:
+            # Fallback: use region before the peak if not enough samples after
+            noise_end_alt = max(0, start_crop - 100 * self.interpolate_rate)
+            noise_start_alt = max(0, noise_end_alt - 200 * self.interpolate_rate)
+            if noise_start_alt < noise_end_alt:
+                noise_floor_pdp = np.mean(np.abs(cir_for_delay_spread[noise_start_alt:noise_end_alt])**2)
+            else:
+                noise_floor_pdp = np.percentile(np.abs(cropped_cir)**2, 10)
+
+        metrics.rms_delay_spread = self.calcRMSDelaySpread(cropped_cir, sample_rate_for_delay_spread, noise_floor=noise_floor_pdp)
+        metrics.k_factor = self.calcKFactor(cropped_cir, noise_floor=noise_floor_pdp)
+
         return metrics
