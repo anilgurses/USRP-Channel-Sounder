@@ -55,6 +55,9 @@ class Waveform:
     def __init__(self, type, wav_opts):
         self.type = type
 
+        self.GUARD_LEN_SAMPS = int(wav_opts.get("GUARD_LEN_SAMPS", 100))
+        self.TX_PEAK = float(wav_opts.get("TX_PEAK", 0.85))
+
         ofdm_opts = wav_opts["OFDM"]
         self.SUBCARRIERS = ofdm_opts["SUBCARRIERS"]
         self.N_PILOT = ofdm_opts["N_PILOTS"]
@@ -73,6 +76,7 @@ class Waveform:
         elif type == "ZC":
             self.SEQ_LEN = wav_opts["ZC"]["SEQ_LEN"]
             self.ROOT_IND = wav_opts["ZC"]["ROOT_IND"]
+            self.ZC_NUM_REPEATS = int(wav_opts["ZC"].get("NUM_REPEATS", 4))
         elif type == "CHIRP":
             self.COMPLEX = wav_opts["CHIRP"]["COMPLEX"]
             self.PHASE = wav_opts["CHIRP"]["PHASE"]
@@ -92,7 +96,7 @@ class Config(object):
 
         self.MODE = config["MODE"]
         self.PERIOD = config["PERIOD"]
-        self.MAX_FREQ_OFF = config["MAX_FREQ_OFF"]
+        self.LOG_EVERY = config.get("LOG_EVERY", None)
 
         temp_rx = config["RECV_OPTS"]
         self.RX = RX_Opts(

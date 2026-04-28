@@ -8,6 +8,12 @@ class Waveform:
     def __init__(self, config):
         self.config = config
 
+    def _guard_len(self):
+        return int(getattr(self.config.WAV_OPTS, "GUARD_LEN_SAMPS", 100))
+
+    def _zc_repeats(self):
+        return int(getattr(self.config.WAV_OPTS, "ZC_NUM_REPEATS", 4))
+
     @staticmethod
     def _deterministic_qpsk(n, seed):
         rng = np.random.default_rng(int(seed))
@@ -32,14 +38,19 @@ class Waveform:
 
         return zc_seq.astype(np.complex64)
 
-    def create_OFDM(self):
+    def get_ofdm_pilots(self):
         """
-        Generate a single OFDM symbol with cyclic prefix.
-        Note: This is experimental. I haven't fully tested it yet.
+        Compute the OFDM pilot layout: which FFT bins carry known QPSK
+        symbols, their values, and the FFT/CP sizes. Used both by
+        create_OFDM (transmit side) and by the receiver's channel
+        estimator so both ends agree on X[k].
 
         Returns
         -----------
-        OFDM_WAV: np.complex64
+        positions: int32 array of FFT bin indices in [0, N_FFT)
+        values:    complex64 array of QPSK pilot values, same length
+        n_fft:     int
+        cp_len:    int
         """
         n_fft = int(self.config.WAV_OPTS.N_FFT)
         n_occupied = int(self.config.WAV_OPTS.SUBCARRIERS)
@@ -55,8 +66,6 @@ class Waveform:
         if dc_guard_bins < 0 or edge_guard_bins < 0:
             raise ValueError("OFDM guard bins must be non-negative.")
 
-        # Signed-carrier indexing around DC: [..., -2, -1, +1, +2, ...]
-        # Keep Nyquist unallocated and reserve edge/DC guard bins.
         pos_start = dc_guard_bins + 1
         pos_stop = n_fft // 2 - edge_guard_bins
         positive = np.arange(pos_start, pos_stop, dtype=np.int32)
@@ -97,14 +106,31 @@ class Waveform:
                 )
             pilot_offsets = occupied[pilot_idx]
 
+        positions = (pilot_offsets % n_fft).astype(np.int32)
         ofdm_seed = int(getattr(self.config.WAV_OPTS, "SEED", 2026))
+        if positions.size > 0:
+            values = self._deterministic_qpsk(positions.size, ofdm_seed)
+        else:
+            values = np.empty(0, dtype=np.complex64)
+
+        return positions, values, n_fft, cp_len
+
+    def create_OFDM(self):
+        """
+        Generate a single OFDM symbol with cyclic prefix.
+
+        Returns
+        -----------
+        OFDM_WAV: np.complex64
+        """
+        positions, values, n_fft, cp_len = self.get_ofdm_pilots()
+
         normalize_peak = bool(getattr(self.config.WAV_OPTS, "NORMALIZE_PEAK", True))
         target_peak = float(getattr(self.config.WAV_OPTS, "TARGET_PEAK", 0.9))
 
         ofdm_bins = np.zeros(n_fft, dtype=np.complex64)
-        if pilot_offsets.size > 0:
-            pilot_values = self._deterministic_qpsk(pilot_offsets.size, ofdm_seed)
-            ofdm_bins[pilot_offsets % n_fft] = pilot_values
+        if positions.size > 0:
+            ofdm_bins[positions] = values
 
         ofdm_symbol = np.fft.ifft(ofdm_bins, n=n_fft).astype(np.complex64)
         if normalize_peak:
@@ -216,27 +242,48 @@ class Waveform:
 
         return frame_filtd, barker_code, thresh
 
-    def create_waveform(self):
+    def create_waveform(self, return_sections=False):
         wav_type = self.config.WAVEFORM
+        guard_len = self._guard_len()
+        guard = np.zeros(guard_len, dtype=np.complex64)
 
-        wav = None
-        guard = np.zeros(100, dtype=np.complex64)
+        sections = []
+        parts = []
 
         if wav_type == "PN":
-            wav = self.create_GLFSR()
+            pn = self.create_GLFSR().astype(np.complex64)
+            parts.append(pn)
+            sections.append(("pn", int(pn.size)))
         elif wav_type == "ZC":
-            wav = self.create_zadoff_chu()
-            # wav = np.hstack([wav, wav, wav, wav])
-            wav = np.concatenate((wav, wav, wav, wav),axis=0)
+            zc = self.create_zadoff_chu()
+            n_rep = max(1, self._zc_repeats())
+            for i in range(n_rep):
+                parts.append(zc)
+                sections.append((f"zc_{i+1}", int(zc.size)))
+                if i != n_rep - 1 and guard_len > 0:
+                    parts.append(guard)
+                    sections.append(("zc_guard", guard_len))
         elif wav_type == "CHIRP":
-            wav = self.create_chirp_wav()
-            
-        ofdm = self.create_OFDM() 
-        # wav = np.hstack([wav, guard, ofdm])
-        wav = np.concatenate((wav, guard, ofdm),axis=0)
+            ch = self.create_chirp_wav()
+            parts.append(ch)
+            sections.append(("chirp", int(ch.size)))
 
+        if guard_len > 0:
+            parts.append(guard)
+            sections.append(("ofdm_guard", guard_len))
 
-        # wav = np.tile(wav, int(1e3))
+        ofdm = self.create_OFDM()
+        parts.append(ofdm)
+        sections.append(("ofdm", int(ofdm.size)))
+
+        wav = np.concatenate(parts, axis=0).astype(np.complex64)
+
+        # Back off the burst peak from full-scale to avoid DAC clipping in the
+        tx_peak = float(getattr(self.config.WAV_OPTS, "TX_PEAK", 0.85))
+        if tx_peak > 0:
+            current_peak = float(np.max(np.abs(wav))) if wav.size > 0 else 0.0
+            if current_peak > 0:
+                wav = (wav * (tx_peak / current_peak)).astype(np.complex64)
 
         if self.config.FILTER.ENABLED:
             sos = butter(
@@ -246,8 +293,10 @@ class Waveform:
                 fs=int(self.config.USRP_CONF.SAMPLE_RATE),
                 output="sos",
             )
-            wav = sosfilt(sos, wav)
+            wav = sosfilt(sos, wav).astype(np.complex64)
 
+        if return_sections:
+            return wav, sections
         return wav
 
     def create_frame(self):

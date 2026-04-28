@@ -1,41 +1,38 @@
 MODE: RX
-PERIOD: 2 # How many burst should be sent in a sec
+PERIOD: 200
 CALIBRATION:
   TYPE: INTERNAL
   RX_REF: 0
-  RX_REF_CSV: '../config/rx_pwr_ref.csv'
-  TX_REF: 0 # Not Implemented
-  TX_REF_CSV: '' # Not Implemented
-WAVEFORM: ZC # PN, CHIRP, and Zadoff-Chu(ZC) for now
-# SAMPLING_DURATION: 0.2
+  RX_REF_CSV: '../../config/rx_pwr_ref.csv'
+  TX_REF: 0
+  TX_REF_CSV: ''
+WAVEFORM: ZC
 RECV_OPTS:
   DURATION: 0.001
   CALC:
     POWER: true
     PL: false
     PLOT: false
-  OUTPUT_TYPE: 'npz' # npz, mat, or sigmf
+  OUTPUT_TYPE: 'npz'
 FILTER:
   ENABLED: false
   TYPE: LP
   BW: 2e+6
 WAV_OPTS:
-  GUARD_LEN_SAMPS: 100 # Zero-padding between ZC reps and before OFDM
+  GUARD_LEN_SAMPS: 512
   CHIRP:
     COMPLEX: true
-    PHASE: 0 # Phase in radian
+    PHASE: 0
     COMPRESS: false
     PULSE_RATIO: 10
     DURATION: 1.0
     BW: 5.6e+7
   ZC:
-    ROOT_IND: 200
-    SEQ_LEN: 401
-    NUM_REPEATS: 4 # Repetitions of ZC, separated by GUARD_LEN_SAMPS
+    ROOT_IND: 1
+    SEQ_LEN: 1021
+    NUM_REPEATS: 4
   PN:
     POLY: [1,0,0,0,0,1,1,0,1,1]
-      # POLY: [1, 0, 0, 0, 0, 1, 0, 0, 1]
-      # SEQ_LEN: 255 # 2^{degree} - 1
     SEQ_LEN: 1023
     COMPLEX_BB: true
   OFDM:
@@ -49,13 +46,12 @@ WAV_OPTS:
     NORMALIZE_PEAK: true
     TARGET_PEAK: 0.9
 USRP:
-  #SERIAL: '32332EC'
   SERIAL: ''
-  NUM_FRAMES: 60
+  NUM_FRAMES: 600
   GAIN: 70
   SAMPLE_RATE: 5.6E+7
   CENTER_FREQ: 3.4e+9
-  INIT_DELAY: 0.5 # 0.05
+  INIT_DELAY: 0.5
   CLK_REF: EXT
   PPS_REF: EXT
 INTERPOLATION:
@@ -65,8 +61,7 @@ INTERPOLATION:
   ROLLOFF: 0.35
   THR_OFF: 25
 GPS:
-  ENABLED: false
-  SOURCE: gnss # or vehicle
+  ENABLED: true
+  SOURCE: gnss
   DIR: /dev/ttyACM0
-# Note for measurement
-NOTE: ""
+NOTE: "A2G 500m long-seq (56 MHz, ZC-1021x4) - RX"

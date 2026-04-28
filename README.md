@@ -12,7 +12,7 @@ A configurable real-time channel sounder for USRP devices, with TX/RX runtime in
 
 ## Prerequisites
 
-- Linux machine with UHD-compatible USRP hardware.
+- Linux machine with USRP hardware.
 - UHD driver 
 - Python 3.10+ recommended.
 - Build tools for Cython compilation (the RX module is `ChsRX.pyx`).
@@ -61,7 +61,8 @@ python3 main.py -c ../config/rx_config.yaml --plot
 
 ## Dry Run (No USRP Required)
 
-Generate a waveform preview plot (time domain, PSD, spectrogram) directly from config:
+Generate a waveform preview plot (time domain, spectrogram, cross-correlation,
+configuration readout) directly from a YAML config:
 
 ```bash
 cd sounder
@@ -73,6 +74,19 @@ Optional: save generated complex samples:
 ```bash
 python3 dry_run_waveform.py -c ../config/tx_config.yaml --save-npy ../plots/tx_dry_run.npy
 ```
+
+Example outputs from the bundled A2G-500m campaign configs
+(`config/a2g_500m/`):
+
+| Variant                              | Dry-run preview                                  |
+|--------------------------------------|--------------------------------------------------|
+| Baseline 56 MHz, ZC-401 x 8          | ![baseline](docs/dryrun/baseline_56mhz.png)      |
+| High-resolution 100 MHz, ZC-401 x 8  | ![highres](docs/dryrun/highres_100mhz.png)       |
+| Long-sequence 56 MHz, ZC-1021 x 4    | ![longseq](docs/dryrun/longseq_56mhz.png)        |
+
+The "Configuration" panel reports range resolution, unambiguous delay, and
+processing gain; the cross-correlation panel reports peak-to-sidelobe ratio
+(PSLR) of the matched filter response.
 
 ## Configuration Guide
 
@@ -116,6 +130,19 @@ Use notebooks in `post_processing/`:
 - `SigMF_conv.ipynb`
 - `SigMF_demo.ipynb`
 - `Antenna.ipynb`
+
+## Hardware Notes
+
+- **USRP B210 / B205mini**: max usable bandwidth is 56 MHz over USB 3.0; the
+  `highres_100mhz` campaign variant requires an X310-class radio.
+- **Synchronization**: with 10 MHz + 1PPS (GPSDO or signal-generator)
+  on TX and RX, ppm-level oscillator drift translates to sub-Hz frequency
+  offset at 3.4 GHz, which is well below the inter-burst interval. Therefore, no
+  runtime CFO correction is needed in the sounder.
+- **DAC headroom**: each generated burst is rescaled so its peak magnitude
+  equals `WAV_OPTS.TX_PEAK` (default 0.85, ~1.4 dB back-off). Without this,
+  the unit-modulus ZC portion would sit at 0 dBFS for the entire sequence
+  and any fixed-point rounding or analog ringing could clip the DAC.
 
 ## Dataset
 

@@ -90,7 +90,6 @@ class Config(object):
         if sigmf:
             self.MODE = "sigmf"
             self.PERIOD = 0
-            self.MAX_FREQ_OFF = 0
             self.RX = RX_Opts(0, False, False, False, "sigmf")
             self.CAL = Calibration("INTERNAL", 0, "", 0, "")
             self.FILTER = Filter(False, "LP", 0)
@@ -109,7 +108,6 @@ class Config(object):
 
         self.MODE = config["MODE"]
         self.PERIOD = config["PERIOD"]
-        self.MAX_FREQ_OFF = config["MAX_FREQ_OFF"]
 
         temp_rx = config["RECV_OPTS"]
         self.RX = RX_Opts(

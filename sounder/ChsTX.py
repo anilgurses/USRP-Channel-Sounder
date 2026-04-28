@@ -1,7 +1,8 @@
-import uhd
 from WaveformGenerator import Waveform
 import math
 from time import sleep
+
+import uhd
 
 
 class Transmitter:
@@ -16,7 +17,11 @@ class Transmitter:
         burst_duration = burst_samples / tx_rate if tx_rate > 0 else 0.0
         burst_index = 0
         last_tx_event = None
-        log_every = max(1, int(getattr(self.config, "PERIOD", 1)) * 5)
+        configured_log_every = getattr(self.config, "LOG_EVERY", None)
+        if configured_log_every is None:
+            log_every = max(1, int(getattr(self.config, "PERIOD", 1)) * 5)
+        else:
+            log_every = max(1, int(configured_log_every))
 
         metadata = uhd.types.TXMetadata()
         metadata.start_of_burst = True
@@ -34,11 +39,27 @@ class Transmitter:
         # Scheduling transmission
         period = self.config.PERIOD
         inc_sec = 1 / period
-        time_tx = usrp.get_time_now().get_real_secs() + self.config.USRP_CONF.INIT_DELAY
+        start_time_tx = math.ceil(
+            usrp.get_time_now().get_real_secs() + self.config.USRP_CONF.INIT_DELAY
+        )
+        time_tx = start_time_tx
 
         while not terminate.is_set():
             burst_index += 1
             scheduled_tx_start = time_tx
+
+            usrp_time = usrp.get_time_now().get_real_secs()
+            if scheduled_tx_start <= usrp_time:
+                skip_count = int((usrp_time - scheduled_tx_start) / inc_sec) + 1
+                scheduled_tx_start += skip_count * inc_sec
+                start_time_tx += skip_count * inc_sec
+                time_tx = scheduled_tx_start
+                logger.warn(
+                    "TX_SCHED_SKIP idx=%d skipped=%d usrp_time=%.9f new_time_tx=%.9f"
+                    " (TX timed command would have been late)",
+                    burst_index, skip_count, usrp_time, time_tx,
+                )
+
             metadata.time_spec = uhd.types.TimeSpec(scheduled_tx_start)
 
             host_submit_time = usrp.get_time_now().get_real_secs()
@@ -83,11 +104,14 @@ class Transmitter:
                 sleep(inc_sec / 1000)
                 usrp_time = usrp.get_time_now().get_real_secs()
 
-            time_tx += inc_sec
-            time_tx = math.ceil(time_tx * 1e4) / 1e4
-
-            if (time_tx * 10) % 2 != 0:
-                time_tx = (math.ceil((time_tx * 1e4) / 2.0) * 2.0) / 1e4
+            # Derive the next timestamp from the initial epoch. Repeated
+            # ceil-based quantization accumulates drift over long runs.
+            next_time_tx = start_time_tx + burst_index * inc_sec
+            # Quantize to the 0.2 ms (200 us) grid using integer ticks.
+            ticks = round(next_time_tx * 1e4)
+            if ticks % 2:
+                ticks += 1
+            time_tx = ticks / 1e4
 
         if last_tx_event is not None:
             logger.info(
