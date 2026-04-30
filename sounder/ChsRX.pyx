@@ -200,6 +200,57 @@ class Receiver:
             "saturated": saturated,
         }
 
+    def burst_health(self, sig, start_idx, length, logger, rx_time=None, emit_log=True):
+        if length <= 0 or start_idx < 0 or start_idx + length > sig.shape[1]:
+            if emit_log:
+                logger.warn(
+                    "RX_BURST_PWR idx=%d skip: start=%d len=%d buf=%d",
+                    self.frame_idx, start_idx, length, sig.shape[1],
+                )
+            return None
+
+        x = sig[0, start_idx:start_idx + length]
+        abs_x = np.abs(x)
+        mean_power = float(np.mean(abs_x ** 2))
+        peak = float(np.max(abs_x))
+        rms = float(np.sqrt(mean_power))
+        max_i = float(np.max(np.abs(x.real)))
+        max_q = float(np.max(np.abs(x.imag)))
+
+        sat_count = int(np.count_nonzero(abs_x > SAT_MAG_THR))
+        sat_pct = 100.0 * sat_count / x.size
+        saturated = sat_count >= SAT_MIN_COUNT and sat_pct > SAT_PCT_WARN
+
+        power_dbfs = 10.0 * math.log10(mean_power) if mean_power > 0 else float("-inf")
+        peak_dbfs = 20.0 * math.log10(peak) if peak > 0 else float("-inf")
+        crest_db = 20.0 * math.log10(peak / rms) if rms > 0 and peak > 0 else 0.0
+        power_dbm = power_dbfs + self.config.CAL.RX_REF
+
+        flag = "SATURATED" if saturated else "OK"
+        rx_time_text = "n/a" if rx_time is None else "%.9f" % float(rx_time)
+        if emit_log:
+            logger.info(
+                (
+                    "RX_BURST_PWR idx=%d t_rx=%s %s mean=%.2fdBFS peak=%.2fdBFS "
+                    "pwr=%.2fdBm sat_pct=%.4f%% crest=%.2fdB win=[%d,%d)"
+                ),
+                self.frame_idx, rx_time_text, flag, power_dbfs, peak_dbfs, power_dbm,
+                sat_pct, crest_db, start_idx, start_idx + length,
+            )
+
+        return {
+            "power_dbfs": power_dbfs,
+            "peak_dbfs": peak_dbfs,
+            "power_dbm": power_dbm,
+            "max_i": max_i,
+            "max_q": max_q,
+            "sat_pct": sat_pct,
+            "crest_db": crest_db,
+            "saturated": saturated,
+            "burst_start": int(start_idx),
+            "burst_end": int(start_idx + length),
+        }
+
     def detect_packet(self, sig, ref, logger, rx_time=None):
         x = sig[0]
         if x.size < ref.size or ref.size == 0:
@@ -398,6 +449,7 @@ class Receiver:
             health = None
             detect = None
             ofdm_meas = None
+            burst = None
 
             if self.config.RX.POWER_CALC or self.config.RX.PL_CALC or dashboard_enabled:
                 health = self.signal_health(
@@ -408,6 +460,17 @@ class Receiver:
                 )
 
             detect = self.detect_packet(buff, self.detect_ref, logger, rx_time=rcv_time)
+
+            if (self.config.RX.POWER_CALC or self.config.RX.PL_CALC or dashboard_enabled) \
+                    and detect.get("first_peak_idx", -1) >= 0:
+                burst = self.burst_health(
+                    buff,
+                    detect["first_peak_idx"],
+                    int(waveform.shape[0]),
+                    logger,
+                    rx_time=rcv_time,
+                    emit_log=self.config.RX.POWER_CALC,
+                )
 
             # Pilot-based RSRP/SNR when packet detected and the
             # OFDM symbol fits in the buffer. RSRP is the preferred input to
@@ -420,13 +483,16 @@ class Receiver:
                 )
 
             if self.config.RX.PL_CALC:
-                # PL_dB = TX_EIRP_dBm - RX_dBm 
+                # PL_dB = TX_EIRP_dBm - RX_dBm
                 rx_dbm = None
                 src = None
                 pl_db = None
                 if ofdm_meas is not None and ofdm_meas["rsrp_dbm"] != float("-inf"):
                     rx_dbm = ofdm_meas["rsrp_dbm"]
                     src = "rsrp"
+                elif burst is not None and burst["power_dbm"] != float("-inf"):
+                    rx_dbm = burst["power_dbm"]
+                    src = "burst"
                 elif health is not None and health["power_dbm"] != float("-inf"):
                     rx_dbm = health["power_dbm"]
                     src = "wideband"
@@ -451,8 +517,20 @@ class Receiver:
                         "power_dbm": health.get("power_dbm") if health else None,
                         "crest_db": health.get("crest_db") if health else None,
                         "sat_pct": health.get("sat_pct") if health else None,
+                        "burst_power_dbfs": burst.get("power_dbfs") if burst else None,
+                        "burst_peak_dbfs": burst.get("peak_dbfs") if burst else None,
+                        "burst_power_dbm": burst.get("power_dbm") if burst else None,
+                        "burst_crest_db": burst.get("crest_db") if burst else None,
+                        "burst_sat_pct": burst.get("sat_pct") if burst else None,
+                        "burst_window": (
+                            [burst.get("burst_start"), burst.get("burst_end")]
+                            if burst else None
+                        ),
                         "sat_status": (
-                            "SATURATED" if health and health.get("saturated") else "OK"
+                            "SATURATED"
+                            if (burst and burst.get("saturated"))
+                            or (health and health.get("saturated"))
+                            else "OK"
                         ),
                         "detect_status": (
                             "DETECTED"
@@ -484,6 +562,7 @@ class Receiver:
                          time_info  =  time_info,
                          pps_info   =  pps_info,
                          health     =  health if health is not None else {},
+                         burst      =  burst if burst is not None else {},
                          detect     =  detect if detect is not None else {},
                          ofdm_meas  =  ofdm_meas if ofdm_meas is not None else {},
                          allow_pickle = True
@@ -498,6 +577,7 @@ class Receiver:
                             "time_info": time_info,
                             "pps_info": pps_info,
                             "health": health if health is not None else {},
+                            "burst": burst if burst is not None else {},
                             "detect": detect if detect is not None else {},
                             "ofdm_meas": ofdm_meas if ofdm_meas is not None else {},
                         })

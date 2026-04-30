@@ -91,7 +91,9 @@ class RxDashboard:
                 self.burst = item
             elif kind == "rx_metrics":
                 self.metrics = item
-                power = item.get("power_dbm")
+                power = item.get("burst_power_dbm")
+                if power is None or not math.isfinite(power):
+                    power = item.get("power_dbm")
                 if power is not None and math.isfinite(power):
                     self.power_history.append(power)
             elif kind == "event":
@@ -230,19 +232,30 @@ class RxDashboard:
         table.add_column("metric", style="dim", no_wrap=True)
         table.add_column("value", justify="right")
 
+        burst_pwr = self.metrics.get("burst_power_dbm")
+        burst_dbfs = self.metrics.get("burst_power_dbfs")
+        burst_peak = self.metrics.get("burst_peak_dbfs")
+        burst_crest = self.metrics.get("burst_crest_db")
         table.add_row(
-            "power",
-            _fmt(self.metrics.get("power_dbm"), " dBm", 2),
+            "burst pwr",
+            _fmt(burst_pwr, " dBm", 2),
             "",
-            "mean",
-            _fmt(self.metrics.get("power_dbfs"), " dBFS", 2),
+            "burst mean",
+            _fmt(burst_dbfs, " dBFS", 2),
         )
         table.add_row(
-            "peak",
-            _fmt(self.metrics.get("peak_dbfs"), " dBFS", 2),
+            "burst peak",
+            _fmt(burst_peak, " dBFS", 2),
             "",
-            "crest",
-            _fmt(self.metrics.get("crest_db"), " dB", 2),
+            "burst crest",
+            _fmt(burst_crest, " dB", 2),
+        )
+        table.add_row(
+            "wide pwr",
+            _fmt(self.metrics.get("power_dbm"), " dBm", 2),
+            "",
+            "wide peak",
+            _fmt(self.metrics.get("peak_dbfs"), " dBFS", 2),
         )
         table.add_row(
             "detect",
