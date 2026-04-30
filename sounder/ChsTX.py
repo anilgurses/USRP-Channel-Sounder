@@ -1,5 +1,5 @@
 from WaveformGenerator import Waveform
-import math
+from Scheduler import PpsSlotScheduler
 from time import sleep
 
 import uhd
@@ -39,25 +39,37 @@ class Transmitter:
         # Scheduling transmission
         period = self.config.PERIOD
         inc_sec = 1 / period
-        start_time_tx = math.ceil(
+        scheduler = PpsSlotScheduler(
+            period,
             usrp.get_time_now().get_real_secs() + self.config.USRP_CONF.INIT_DELAY
         )
-        time_tx = start_time_tx
+        next_slot_index = 0
+        logger.info(
+            "TX_SCHED_SYNC epoch=%.9f period=%.3fHz slots_per_sec=%d slot=%.9fs",
+            scheduler.epoch_s,
+            float(period),
+            scheduler.slots_per_second,
+            scheduler.slot_s,
+        )
 
         while not terminate.is_set():
             burst_index += 1
-            scheduled_tx_start = time_tx
+            scheduled_tx_start = scheduler.time_for_index(next_slot_index)
 
             usrp_time = usrp.get_time_now().get_real_secs()
             if scheduled_tx_start <= usrp_time:
-                skip_count = int((usrp_time - scheduled_tx_start) / inc_sec) + 1
-                scheduled_tx_start += skip_count * inc_sec
-                start_time_tx += skip_count * inc_sec
-                time_tx = scheduled_tx_start
+                previous_slot_index = next_slot_index
+                next_slot_index = scheduler.next_index_after(
+                    usrp_time,
+                    min_index=next_slot_index + 1,
+                )
+                skip_count = next_slot_index - previous_slot_index
+                scheduled_tx_start = scheduler.time_for_index(next_slot_index)
                 logger.warn(
                     "TX_SCHED_SKIP idx=%d skipped=%d usrp_time=%.9f new_time_tx=%.9f"
-                    " (TX timed command would have been late)",
-                    burst_index, skip_count, usrp_time, time_tx,
+                    " slot=%d (TX timed command would have been late)",
+                    burst_index, skip_count, usrp_time, scheduled_tx_start,
+                    next_slot_index,
                 )
 
             metadata.time_spec = uhd.types.TimeSpec(scheduled_tx_start)
@@ -100,18 +112,11 @@ class Transmitter:
             )
 
             usrp_time = usrp.get_time_now().get_real_secs()
-            while usrp_time < time_tx:
+            while usrp_time < scheduled_tx_start:
                 sleep(inc_sec / 1000)
                 usrp_time = usrp.get_time_now().get_real_secs()
 
-            # Derive the next timestamp from the initial epoch. Repeated
-            # ceil-based quantization accumulates drift over long runs.
-            next_time_tx = start_time_tx + burst_index * inc_sec
-            # Quantize to the 0.2 ms (200 us) grid using integer ticks.
-            ticks = round(next_time_tx * 1e4)
-            if ticks % 2:
-                ticks += 1
-            time_tx = ticks / 1e4
+            next_slot_index += 1
 
         if last_tx_event is not None:
             logger.info(

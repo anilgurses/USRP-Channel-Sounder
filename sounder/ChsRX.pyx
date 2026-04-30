@@ -8,6 +8,7 @@ from scipy.io import savemat
 from queue import Empty
 from BufferToProcess import BufferToProcess
 from WaveformGenerator import Waveform
+from Scheduler import PpsSlotScheduler
 from datetime import datetime
 import os
 import math
@@ -560,18 +561,41 @@ class Receiver:
             self.config.USRP_CONF.PPS_REF,
         )
 
-        start_time_rx = math.ceil(
+        period = self.config.PERIOD
+        scheduler = PpsSlotScheduler(
+            period,
             usrp.get_time_now().get_real_secs() + self.config.USRP_CONF.INIT_DELAY
         )
-        time_rx = start_time_rx
-
-        period = self.config.PERIOD
         inc_sec = 1 / period
+        next_slot_index = 0
+        logger.info(
+            "RX_SCHED_SYNC epoch=%.9f period=%.3fHz slots_per_sec=%d slot=%.9fs",
+            scheduler.epoch_s,
+            float(period),
+            scheduler.slots_per_second,
+            scheduler.slot_s,
+        )
 
         while not terminate.is_set():
             try:
                 burst_index += 1
-                scheduled_rx_start = time_rx
+                scheduled_rx_start = scheduler.time_for_index(next_slot_index)
+                usrp_time = usrp.get_time_now().get_real_secs()
+                if scheduled_rx_start <= usrp_time:
+                    previous_slot_index = next_slot_index
+                    next_slot_index = scheduler.next_index_after(
+                        usrp_time,
+                        min_index=next_slot_index + 1,
+                    )
+                    skip_count = next_slot_index - previous_slot_index
+                    scheduled_rx_start = scheduler.time_for_index(next_slot_index)
+                    logger.warn(
+                        "RX_SCHED_SKIP idx=%d skipped=%d usrp_time=%.9f new_time_rx=%.9f"
+                        " slot=%d (TX/RX burst alignment lost)",
+                        burst_index, skip_count, usrp_time, scheduled_rx_start,
+                        next_slot_index,
+                    )
+
                 stream_cmd.stream_now = False
                 stream_cmd.num_samps = max_samps_per_packet
                 stream_cmd.time_spec = uhd.types.TimeSpec(scheduled_rx_start)
@@ -639,25 +663,7 @@ class Receiver:
                 return
 
             usrp_time = usrp.get_time_now().get_real_secs()
-            # Derive the next timestamp from the initial epoch. Repeated
-            # ceil-based quantization accumulates drift over long runs.
-            time_rx = start_time_rx + burst_index * inc_sec
-
-            if time_rx <= usrp_time:
-                skip_count = int((usrp_time - time_rx) / inc_sec) + 1
-                time_rx += skip_count * inc_sec
-                start_time_rx += skip_count * inc_sec
-                logger.warn(
-                    "RX_SCHED_SKIP idx=%d skipped=%d usrp_time=%.9f new_time_rx=%.9f"
-                    " (TX/RX burst alignment lost)",
-                    burst_index, skip_count, usrp_time, time_rx,
-                )
-
-            # Quantize to the 0.2 ms (200 us) grid using integer ticks
-            ticks = round(time_rx * 1e4)
-            if ticks % 2:
-                ticks += 1
-            time_rx = ticks / 1e4
+            next_slot_index += 1
 
             if metadata.error_code == uhd.types.RXMetadataErrorCode.none:
                 schedule_error_us = (actual_rx_start - scheduled_rx_start) * 1e6
