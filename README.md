@@ -2,10 +2,13 @@
 
 A configurable real-time channel sounder for USRP devices, with TX/RX runtime in `sounder/` and analysis tools in `post_processing/`.
 
+![USRP Channel Sounder preview](figures/preview.png)
+
 ## Repository Layout
 
 - `sounder/`: runtime TX/RX code.
 - `config/`: example configuration files.
+- `figures/`: README preview and example output images.
 - `post_processing/`: analysis scripts and notebooks.
 - `requirements.txt`: runtime Python dependencies.
 - `post_processing/requirements.txt`: analysis dependencies.
@@ -80,9 +83,9 @@ Example outputs from the bundled A2G-500m campaign configs
 
 | Variant                              | Dry-run preview                                  |
 |--------------------------------------|--------------------------------------------------|
-| Baseline 56 MHz, ZC-401 x 8          | ![baseline](docs/dryrun/baseline_56mhz.png)      |
-| High-resolution 100 MHz, ZC-401 x 8  | ![highres](docs/dryrun/highres_100mhz.png)       |
-| Long-sequence 56 MHz, ZC-1021 x 4    | ![longseq](docs/dryrun/longseq_56mhz.png)        |
+| Baseline 56 MHz, ZC-401 x 8          | ![baseline](figures/baseline_56mhz.png)          |
+| High-resolution 100 MHz, ZC-401 x 8  | ![highres](figures/highres_100mhz.png)           |
+| Long-sequence 56 MHz, ZC-1021 x 4    | ![longseq](figures/longseq_56mhz.png)            |
 
 The "Configuration" panel reports range resolution, unambiguous delay, and
 processing gain; the cross-correlation panel reports peak-to-sidelobe ratio
