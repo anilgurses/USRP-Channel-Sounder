@@ -41,3 +41,7 @@ cython_debug/
 
 # Mac OS files
 .DS_Store
+._*
+
+
+results/
