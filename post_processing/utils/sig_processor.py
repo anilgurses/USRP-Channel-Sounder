@@ -2,56 +2,50 @@ from dataclasses import dataclass, asdict, field
 import numpy as np
 from geopy.distance import geodesic
 import time
+import pandas as pd
 from scipy import signal
-import csv
-import os
 
 from utils.constants import *
 from utils.channel import *
 from utils.vhcl_processor import *
 from utils.antenna import *
+from utils.usrp_calibration import (
+    DEFAULT_TX_REF_DBM,
+    populate_link_budget_config,
+)
 
 TO_THRESHOLD = 0.02
 CIR_OFFSET = 1000 # Offset for the CIR delay
 CIR_START = 300
+CLIP_COMPONENT_THRESHOLD = 0.999
+PATHLOSS_MIN_SNR_DB = -15.0
+# A frame is only usable for absolute path loss if the ADC is effectively
+# unsaturated. Clip-frac alone is too lenient (20% at the rail still clips
+# every strong peak); clip-max catches single-sample overflow.
+PATHLOSS_MAX_CLIP_FRAC = 0.02
+# Clip-max is measured on the raw (pre-freq-correction) ADC samples; for
+# signed 16-bit captures the max normalised component is 32767/32768 ≈
+# 0.99997, so any value ≥ 1.0 indicates an impossible/overflowed sample
+# (e.g. rounding overflow or wrap). Measured *after* frequency correction,
+# max(|re|,|im|) is not rotation-invariant and can grow up to √2 times the
+# raw magnitude 
+PATHLOSS_MAX_CLIP_MAX = 1.0
+
+
+def classify_saturation_status(clip_frac: float, clip_max: float) -> str:
+    frac_over = bool(float(clip_frac) >= PATHLOSS_MAX_CLIP_FRAC)
+    max_over = bool(float(clip_max) >= PATHLOSS_MAX_CLIP_MAX)
+    if frac_over and max_over:
+        return "both"
+    if frac_over:
+        return "clip_frac"
+    if max_over:
+        return "clip_max"
+    return "clean"
+
 
 # Link-budget constants
-TX_REF_DBM = 15.0       # B210 measured TX output power at antenna port (dBm)
-CABLE_LOSS_DB = 2.0      # Estimated total TX + RX cable/connector loss (dB)
-
-# Calibration CSV: maps USRP serial → RX reference power at each gain setting.
-# Columns are gain values; entries are the RF input power (dBm) that produces
-# the reference digital level at that gain.
-_POWER_REFS_CSV = os.path.join(os.path.dirname(__file__), '..', '..', 'config', 'power_refs.csv')
-
-def _load_rx_ref(gain: float, serial: str = '', csv_path: str = _POWER_REFS_CSV) -> float:
-    if not os.path.isfile(csv_path):
-        # Fallback: average of both serials at gain=70 (pre-computed)
-        return -48.83
-
-    with open(csv_path, newline='') as f:
-        reader = csv.reader(f)
-        header = next(reader)
-        # Column headers after serial are gain values
-        gain_cols = [float(g.strip()) for g in header[1:]]
-        rows = {}
-        for row in reader:
-            if not row or not row[0].strip():
-                continue
-            ser = row[0].strip()
-            vals = [float(v.strip()) for v in row[1:]]
-            rows[ser] = vals
-
-    if not rows:
-        return -48.83
-
-    # Pick the right serial or average
-    if serial and serial in rows:
-        vals = rows[serial]
-    else:
-        vals = np.mean(list(rows.values()), axis=0).tolist()
-
-    return float(np.interp(gain, gain_cols, vals))
+TX_REF_DBM = DEFAULT_TX_REF_DBM
 
 @dataclass
 class SignalMetric:
@@ -68,15 +62,22 @@ class SignalMetric:
     detected: bool
     power: np.ndarray
     avgPower: np.float16 
+    signal_power: np.ndarray
+    avgSigPower: np.float32
     snr: np.ndarray
     avgSnr: np.float32
     freq_offset: np.float64
     path_loss: np.ndarray
     avg_pl: np.float16
+    noise_power_dbfs: np.float32
     est_dist: np.float32
     peaks: np.ndarray
     orig_peaks: np.ndarray
     start_point: np.uint32
+    clip_frac: np.float32
+    clip_max: np.float32
+    saturation_status: str
+    pl_valid: bool
     
     aod_theta: np.float32
     aod_phi: np.float32
@@ -89,6 +90,7 @@ class SignalMetric:
     
     # TODO to be replaced with Channel class
     corr: np.ndarray
+    corr_lags: np.ndarray = field(default_factory=lambda: np.array([]))
     save_corr: bool = False
 
     # TODO Not implemented yet
@@ -105,12 +107,21 @@ class SignalMetric:
         pass
     
     def __str__(self) -> str:
-        return f"SignalMetric: time={self.time}, center_freq={self.center_freq}, dist={self.dist}, h_dist={self.h_dist}, v_dist={self.v_dist}, wav_type={self.wav_type}, detected={self.detected}, snr={self.snr}, rsrp={self.rsrp}, power={self.power}, avgPower={self.avgPower}, freq_offset={self.freq_offset}, path_loss={self.path_loss}, avg_pl={self.avg_pl}, shadowing={self.shadowing}, multipath={self.multipath}, delay={self.delay}, doppler_shift={self.doppler_shift}, est_dist={self.est_dist}, peaks={self.peaks}, vehicle={self.vehicle}, corr={self.corr}, save_corr={self.save_corr}"
-    
-    def __repr__(self) -> str:
-        return f"SignalMetric: time={self.time}, center_freq={self.center_freq}, dist={self.dist}, h_dist={self.h_dist}, v_dist={self.v_dist}, wav_type={self.wav_type}, detected={self.detected}, snr={self.snr}, rsrp={self.rsrp}, power={self.power}, avgPower={self.avgPower}, freq_offset={self.freq_offset}, path_loss={self.path_loss}, avg_pl={self.avg_pl}, shadowing={self.shadowing}, multipath={self.multipath}, delay={self.delay}, doppler_shift={self.doppler_shift}, est_dist={self.est_dist}, peaks={self.peaks}, vehicle={self.vehicle}, corr={self.corr}, save_corr={self.save_corr}"
+        return (
+            f"SignalMetric: time={self.time}, center_freq={self.center_freq}, "
+            f"dist={self.dist}, h_dist={self.h_dist}, v_dist={self.v_dist}, "
+            f"wav_type={self.wav_type}, detected={self.detected}, snr={self.snr}, "
+            f"rsrp={self.rsrp}, power={self.power}, avgPower={self.avgPower}, "
+            f"freq_offset={self.freq_offset}, path_loss={self.path_loss}, "
+            f"avg_pl={self.avg_pl}, shadowing={self.shadowing}, "
+            f"multipath={self.multipath}, delay={self.delay}, "
+            f"doppler_shift={self.doppler_shift}, est_dist={self.est_dist}, "
+            f"peaks={self.peaks}, vehicle={self.vehicle}, corr={self.corr}, "
+            f"save_corr={self.save_corr}"
+        )
 
-    # Not needed anymore
+    __repr__ = __str__
+
     def __to_dict__(self):
         dct = asdict(self)
         v_dct = self.vehicle.__to_dict__()
@@ -120,7 +131,7 @@ class SignalMetric:
         return dct
 
     def to_scalar_dict(self):
-        """Return only scalar values — lightweight dict for DataFrame construction.
+        """Return only scalar values: lightweight dict for DataFrame construction.
 
         Excludes large numpy arrays (corr, power, snr, path_loss, peaks, etc.)
         that are not persisted to CSV, drastically reducing memory when results
@@ -130,12 +141,17 @@ class SignalMetric:
             'time': self.time, 'center_freq': self.center_freq,
             'dist': self.dist, 'h_dist': self.h_dist, 'v_dist': self.v_dist,
             'wav_type': self.wav_type, 'detected': self.detected,
-            'avgPower': self.avgPower, 'avgSnr': self.avgSnr,
+            'avgPower': self.avgPower, 'avgSigPower': self.avgSigPower,
+            'avgSnr': self.avgSnr,
             'freq_offset': self.freq_offset, 'avg_pl': self.avg_pl,
+            'noise_power_dbfs': self.noise_power_dbfs,
             'est_dist': self.est_dist, 'start_point': self.start_point,
             'aod_theta': self.aod_theta, 'aod_phi': self.aod_phi,
             'aoa_theta': self.aoa_theta, 'aoa_phi': self.aoa_phi,
-            'stage': self.stage,
+            'stage': self.stage, 'clip_frac': self.clip_frac,
+            'clip_max': self.clip_max,
+            'saturation_status': self.saturation_status,
+            'pl_valid': self.pl_valid,
             'rsrp': self.rsrp, 'shadowing': self.shadowing,
             'multipath': self.multipath, 'delay': self.delay,
             'doppler_shift': self.doppler_shift,
@@ -151,16 +167,21 @@ class SignalMetric:
         })
         return d
 
+
 class SigProcessor:
-    def __init__(self, config, wav1, wav2, total_len, interpolate_rate=1) -> None:
+    def __init__(self, config, wav1, wav2, total_len) -> None:
         # Parameters that are required for calculation
-        self.config = config 
+        self.config = config
         self.ref_signal = wav1
         self.ofdm_signal = wav2
         ## TODO: replace with frame_len
-        self.total_len = total_len 
+        self.total_len = total_len
         self.start_point = np.inf
-        self.interpolate_rate = interpolate_rate
+        self.seq_len = len(self.ref_signal)
+        self.zc_repeat_count = max(
+            int(round(float(self.total_len) / max(self.seq_len, 1))),
+            1,
+        )
     
     def getPeaks(self, cir, prm=40):
         peaks, _ = signal.find_peaks(np.abs(cir), distance=self.config.WAV_OPTS.SEQ_LEN, prominence=prm)
@@ -186,14 +207,69 @@ class SigProcessor:
         in_frame = (peak_samples >= first_peak) & (peak_samples < first_peak + self.total_len)
         return np.asarray(peak_samples[in_frame], dtype=np.int64)
 
-    ## Digital power (dBFS) — var() returns mean power E[|x|²], so use 10·log10
-    def calcPowerdBm(self, sig_of_int):
-        return 10 * np.log10(np.var(sig_of_int) + 1e-13)
+    ## Digital power (dBFS): var() returns mean power E[|x|²], so use 10·log10.
+    ## Optionally debias by the per-sample noise power σ²_w; at that point
+    ## var(r) ≈ |α|²·mean(|s|²) + σ²_w, so subtracting σ²_w recovers the
+    ## signal-only power.
+    def calcPowerdBm(self, sig_of_int, noise_power_linear=0.0):
+        power = float(np.var(sig_of_int))
+        if noise_power_linear > 0.0:
+            power -= float(noise_power_linear)
+        return 10 * np.log10(max(power, 1e-13))
+
+    def calcPathLossFromPowerDbfs(self, power_dbfs, tx_ref_dbm, rx_ref_dbm):
+        return tx_ref_dbm + self.calcPowerdBm(self.ref_signal) - rx_ref_dbm - float(power_dbfs)
+
+    def calcSignalPowerDbfsFromCorrPeak(self, corr_peak, noise_power_linear=0.0):
+        seq_energy = np.sum(np.abs(self.ref_signal) ** 2) + 1e-30
+        seq_len = max(len(self.ref_signal), 1)
+        sig_power = (np.abs(corr_peak) ** 2) / (seq_energy * seq_len + 1e-30)
+        # Matched-filter output bias: E[|corr_peak|²] contains a σ²_w·seq_energy
+        # term, which becomes σ²_w/seq_len once normalized by (seq_energy·seq_len).
+        # The processing gain (1/seq_len) makes this much smaller than the
+        # variance-domain bias, but subtracting it is still the right thing.
+        if noise_power_linear > 0.0:
+            sig_power -= float(noise_power_linear) / seq_len
+        return 10 * np.log10(max(sig_power, 1e-30))
+
+    def estimateNoisePowerLinearFromCorr(self, xcorr, peak_samples):
+        """Estimate per-sample noise power sigma^2_w from off-peak correlator bins.
+
+        At a noise-only lag k, xcorr[k] = sum(w[n]·s*[n-k])_n is a sum of seq_len
+        i.i.d. zero-mean complex terms, so E[|xcorr[k]|^2] = sigma^2_w · seq_energy.
+        We mask out one sequence length around every detected peak, then use
+        the median of |xcorr|^2 (robust against undetected peaks or multipath
+        replicas) and convert median -> mean using the exponential-distribution
+        factor ln(2).
+        """
+        if xcorr is None or len(xcorr) == 0:
+            return 0.0
+
+        seq_len = max(len(self.ref_signal), 1)
+        seq_energy = float(np.sum(np.abs(self.ref_signal) ** 2))
+        if seq_energy <= 0.0:
+            return 0.0
+
+        mask = np.ones(len(xcorr), dtype=bool)
+        guard = seq_len
+        for p in peak_samples:
+            center = int(p) + seq_len - 1
+            lo = max(0, center - guard)
+            hi = min(len(xcorr), center + guard + 1)
+            mask[lo:hi] = False
+
+        off_peak_mag2 = np.abs(xcorr[mask]) ** 2
+        if off_peak_mag2.size < 32:
+            return 0.0
+
+        noise_corr_energy = float(np.median(off_peak_mag2)) / np.log(2.0)
+        return max(noise_corr_energy / seq_energy, 0.0)
+
+    def calcClipStats(self, sig_of_int, threshold=CLIP_COMPONENT_THRESHOLD):
+        comp_mag = np.maximum(np.abs(sig_of_int.real), np.abs(sig_of_int.imag))
+        return float(np.mean(comp_mag >= threshold)), float(np.max(comp_mag))
     
-    def calcPathLoss(self, sig_of_int, tx_ref_dbm, rx_ref_dbm):
-        return tx_ref_dbm + self.calcPowerdBm(self.ref_signal) - rx_ref_dbm - self.calcPowerdBm(sig_of_int)
-    
-    def calcSNR(self, sig_of_interest, seq):
+    def calcResidualFitSNR(self, sig_of_interest, seq):
         if len(sig_of_interest) < len(seq):
             raise ValueError("The length of the signal is less than the length of the reference sequence")
         correlation = np.correlate(sig_of_interest, seq, mode='full')
@@ -207,6 +283,14 @@ class SigProcessor:
         noise_power = np.mean(np.abs(residual_noise)**2)
         snr_estimated = signal_power / noise_power
         return 10 * np.log10(snr_estimated)
+
+    def calcMatchedFilterSNR(self, signal_power_dbfs, noise_power_linear):
+        if not np.isfinite(signal_power_dbfs) or noise_power_linear <= 0.0:
+            return np.nan
+        signal_power_linear = float(10.0 ** (float(signal_power_dbfs) / 10.0))
+        if signal_power_linear <= 0.0:
+            return np.nan
+        return float(10.0 * np.log10(signal_power_linear / float(noise_power_linear)))
     
     def calcDist(self, ind):
         est_dist = (ind - N_DELAY_SAMPLE_USRP) * (1/self.config.USRP_CONF.SAMPLE_RATE) * SPEED_OF_LIGHT
@@ -242,6 +326,7 @@ class SigProcessor:
         threshold = noise_floor * 10**(noise_margin_db / 10)
 
         # Any power level below the threshold is noise
+        # i'm jsut filterin out by setting out to 0
         power_pdp[power_pdp < threshold] = 0
         return power_pdp
 
@@ -284,22 +369,87 @@ class SigProcessor:
         nlos_power = np.sum(power_pdp) - los_power
         
         if nlos_power == 0:
-            return 40.0  # Cap at 40 dB — pure LoS (no measurable NLOS power)
+            return 40.0  # Cap at 40 dB. pure LoS (no measurable NLOS power)
             
         k_factor = los_power / nlos_power
         return 10 * np.log10(k_factor)
 
     def getPreamble(self, rcv, peak_samples):
-        preamble = rcv[peak_samples[0]:peak_samples[0]+self.config.WAV_OPTS.SEQ_LEN*2]
+        if len(peak_samples) == 0:
+            return np.array([], dtype=np.complex64)
+        preamble_len = max(2 * self.seq_len, 0)
+        start = int(peak_samples[0])
+        end = min(len(rcv), start + preamble_len)
+        preamble = rcv[start:end]
         return preamble
+
+    def _extract_zc_blocks(self, rcv, start_sample):
+        if self.seq_len <= 0:
+            return []
+
+        blocks = []
+        for rep_idx in range(self.zc_repeat_count):
+            start = int(start_sample + rep_idx * self.seq_len)
+            end = start + self.seq_len
+            if start < 0 or end > len(rcv):
+                break
+            blocks.append(rcv[start:end])
+        return blocks
+
+    def estimateZCFreqOffset(self, rcv, peak_samples):
+        if len(peak_samples) == 0:
+            return np.nan
+
+        blocks = self._extract_zc_blocks(rcv, int(peak_samples[0]))
+        if len(blocks) < 2:
+            return np.nan
+
+        sample_rate = float(self.config.USRP_CONF.SAMPLE_RATE)
+        estimates = []
+        weights = []
+
+        for lag in range(1, len(blocks)):
+            pair_products = []
+            for idx in range(len(blocks) - lag):
+                prod = np.vdot(blocks[idx], blocks[idx + lag])
+                if np.isfinite(prod.real) and np.isfinite(prod.imag):
+                    pair_products.append(prod)
+            if not pair_products:
+                continue
+
+            total_prod = np.sum(pair_products, dtype=np.complex128)
+            weight = float(np.abs(total_prod))
+            if weight <= 0.0:
+                continue
+
+            sample_delta = lag * self.seq_len
+            estimates.append(
+                float(np.angle(total_prod) * sample_rate / (2 * np.pi * sample_delta))
+            )
+            weights.append(weight)
+
+        if not estimates:
+            return np.nan
+        return float(np.average(estimates, weights=weights))
+
+    def estimateFreqOffset(self, rcv, peak_samples):
+        if self.config.WAVEFORM == "ZC":
+            zc_est = self.estimateZCFreqOffset(rcv, peak_samples)
+            if np.isfinite(zc_est):
+                return float(zc_est)
+
+        preamble = self.getPreamble(rcv, peak_samples)
+        if len(preamble) < 2:
+            return 0.0
+        return float(self.moose_alg(preamble, self.config.USRP_CONF.SAMPLE_RATE))
     
     def getCIR(self, rcv, ref, normalize=False):
         xcorr = signal.correlate(rcv, ref, mode="full", method="fft")
         lags = signal.correlation_lags(len(rcv), len(ref), mode="full")
-        # xcorr = np.abs(xcorr) 
-
         if normalize:
-            xcorr /= np.max(xcorr) 
+            peak = np.max(np.abs(xcorr))
+            if peak > 0:
+                xcorr = xcorr / peak
 
         return xcorr, lags
     
@@ -314,14 +464,21 @@ class SigProcessor:
         sgnlMetric.detected = False
         sgnlMetric.power = np.array([])
         sgnlMetric.avgPower = 0.0
+        sgnlMetric.signal_power = np.array([])
+        sgnlMetric.avgSigPower = np.nan
         sgnlMetric.snr = np.array([])
         sgnlMetric.avgSnr = 0.0
         sgnlMetric.freq_offset = 0.0
         sgnlMetric.path_loss = np.array([])
         sgnlMetric.avg_pl = 0.0
+        sgnlMetric.noise_power_dbfs = np.nan
         sgnlMetric.est_dist = 0.0
         sgnlMetric.peaks = np.array([])
         sgnlMetric.start_point = 0
+        sgnlMetric.clip_frac = 0.0
+        sgnlMetric.clip_max = 0.0
+        sgnlMetric.saturation_status = "no_signal"
+        sgnlMetric.pl_valid = False
         sgnlMetric.aod_theta = 0.0
         sgnlMetric.aod_phi = 0.0
         sgnlMetric.aoa_theta = 0.0
@@ -329,6 +486,7 @@ class SigProcessor:
         sgnlMetric.stage = ""
         sgnlMetric.vehicle = vehicle
         sgnlMetric.corr = np.array([])
+        sgnlMetric.corr_lags = np.array([])
         sgnlMetric.save_corr = False
         sgnlMetric.rsrp = 0.0
         sgnlMetric.shadowing = 0
@@ -341,34 +499,35 @@ class SigProcessor:
         return sgnlMetric
     
     def process(self, r_time, rcv, vehicle_metric, tx_vehicle_metric=None, save_corr=False):
-        """Process the received signal step by step"""
         metrics = SignalMetric()
-        
+
         metrics.time = np.float32(r_time)
         metrics.center_freq = self.config.USRP_CONF.CENTER_FREQ / 1e6 # MHz
         metrics.wav_type = self.config.WAVEFORM
-        
-        # 1 - Detect the signal 
-        xcorr, _ = self.getCIR(rcv, self.ref_signal)
+
+        # Keep a reference to the raw (pre-freq-correction) samples so clip
+        # statistics are measured on the original ADC output. max(|re|,|im|)
+        # is not rotation-invariant, so measuring it after correctFreq() can
+        # inflate by up to root 2 and fail the saturation gate.
+        rcv_raw = rcv
+
+        # 1 - Detect the signal
+        xcorr, xcorr_lags = self.getCIR(rcv, self.ref_signal)
         peaks = self.getPeaks(xcorr)
         peak_samples = self.corrPeaksToSampleIndices(peaks, len(rcv))
         peak_samples = peak_samples[
             peak_samples + self.config.WAV_OPTS.SEQ_LEN * 2 <= len(rcv)
         ]
-       
-        if save_corr:
-            tmp_xcorr = xcorr
         if len(peak_samples) == 0:
             ## Making sure that signal exists
             return self.zeroMetric(vehicle_metric)
         
         # Coarse frequency estimation
-        preamble_coarse = self.getPreamble(rcv, peak_samples)
-        freq_shift_coarse = self.moose_alg(preamble_coarse, self.config.USRP_CONF.SAMPLE_RATE)
+        freq_shift_coarse = self.estimateFreqOffset(rcv, peak_samples)
         rcv_coarse_corrected = self.correctFreq(rcv, freq_shift_coarse)
 
         # Fine frequency estimation
-        xcorr_fine, _ = self.getCIR(rcv_coarse_corrected, self.ref_signal)
+        xcorr_fine, xcorr_lags_fine = self.getCIR(rcv_coarse_corrected, self.ref_signal)
         peaks_fine = self.getPeaks(xcorr_fine)
         peak_samples_fine = self.corrPeaksToSampleIndices(peaks_fine, len(rcv_coarse_corrected))
         peak_samples_fine = peak_samples_fine[
@@ -376,19 +535,20 @@ class SigProcessor:
         ]
 
         if len(peak_samples_fine) == 0:
-            # Fine step degraded detection; keep coarse correction but use the
-            # xcorr from the coarse-corrected signal and re-detect peaks.
             freq_shift = freq_shift_coarse
             rcv = rcv_coarse_corrected
             xcorr = xcorr_fine
+            xcorr_lags = xcorr_lags_fine
             peaks = self.getPeaks(xcorr_fine, prm=20)  # lower prominence threshold
             peak_samples = self.corrPeaksToSampleIndices(peaks, len(rcv))
             peak_samples = peak_samples[
                 peak_samples + self.config.WAV_OPTS.SEQ_LEN * 2 <= len(rcv)
             ]
         else:
-            preamble_fine = self.getPreamble(rcv_coarse_corrected, peak_samples_fine)
-            freq_shift_fine = self.moose_alg(preamble_fine, self.config.USRP_CONF.SAMPLE_RATE)
+            freq_shift_fine = self.estimateFreqOffset(
+                rcv_coarse_corrected,
+                peak_samples_fine,
+            )
             
             freq_shift = freq_shift_coarse + freq_shift_fine
             
@@ -396,7 +556,7 @@ class SigProcessor:
             rcv = self.correctFreq(rcv, freq_shift)
             
             # Recalculate xcorr and peaks with the fully corrected rcv
-            xcorr, _ = self.getCIR(rcv, self.ref_signal)
+            xcorr, xcorr_lags = self.getCIR(rcv, self.ref_signal)
             peaks = self.getPeaks(xcorr)
             peak_samples = self.corrPeaksToSampleIndices(peaks, len(rcv))
             peak_samples = peak_samples[
@@ -410,20 +570,6 @@ class SigProcessor:
         peak_samples = self.selectFramePeaks(peak_samples)
         if len(peak_samples) == 0:
             return self.zeroMetric(vehicle_metric)
-        
-        # Experimental
-        # --- Interpolation Logic ---
-        cir_for_delay_spread = xcorr
-        sample_rate_for_delay_spread = self.config.USRP_CONF.SAMPLE_RATE
-
-        if self.interpolate_rate > 1:
-            interp_rcv = signal.resample(rcv, len(rcv) * self.interpolate_rate)
-            interp_ref = signal.resample(self.ref_signal, len(self.ref_signal) * self.interpolate_rate)
-            
-            cir_for_delay_spread, _ = self.getCIR(interp_rcv, interp_ref)
-            sample_rate_for_delay_spread = self.config.USRP_CONF.SAMPLE_RATE * self.interpolate_rate
-            del interp_rcv, interp_ref
-        # --- End Interpolation Logic ---
 
         first_peak = int(peak_samples[0])
         metrics.start_point = first_peak
@@ -434,36 +580,70 @@ class SigProcessor:
         metrics.peaks = peak_samples.copy()
         
         if save_corr:
-            metrics.corr = tmp_xcorr
+            metrics.corr = np.array(xcorr, copy=True)
+            metrics.corr_lags = np.array(xcorr_lags, copy=True)
             metrics.save_corr = True
         else:
             metrics.corr = np.array([])
+            metrics.corr_lags = np.array([])
             metrics.save_corr = False
         
         # 2 - Calculate the power of the signal
         _pr_len = len(self.ref_signal)
-        
+
         peak_samples = [int(p) for p in peak_samples if p + _pr_len <= len(rcv)]
 
-        metrics.power = np.array([self.calcPowerdBm(rcv[peak:peak+_pr_len]) for peak in peak_samples])
+        # Estimate per-sample noise power sigma^2_w from off-peak matched-filter
+        # bins, then debias both power estimators. The variance-based estimator
+        # is biased by sigma^2_w directly; the correlation-based estimator only by
+        # sigma^2_w/seq_len due to the matched-filter processing gain.
+        noise_power_linear = self.estimateNoisePowerLinearFromCorr(xcorr, peak_samples)
+        metrics.noise_power_dbfs = (
+            float(10.0 * np.log10(noise_power_linear))
+            if noise_power_linear > 0.0 else np.nan
+        )
+
+        metrics.power = np.array([
+            self.calcPowerdBm(rcv[peak:peak+_pr_len], noise_power_linear)
+            for peak in peak_samples
+        ])
+        corr_peak_idxs = np.clip(
+            np.asarray(peak_samples, dtype=np.int64) + (_pr_len - 1),
+            0, len(xcorr) - 1,
+        )
+        metrics.signal_power = np.array([
+            self.calcSignalPowerDbfsFromCorrPeak(xcorr[idx], noise_power_linear)
+            for idx in corr_peak_idxs
+        ])
+        clip_stats = [self.calcClipStats(rcv_raw[peak:peak+_pr_len]) for peak in peak_samples]
+        clip_fracs = np.array([stat[0] for stat in clip_stats], dtype=float)
+        clip_maxes = np.array([stat[1] for stat in clip_stats], dtype=float)
             
-        if metrics.power.any(): 
+        if len(metrics.power) > 0:
             metrics.avgPower = np.mean(metrics.power)
+        if len(metrics.signal_power) > 0:
+            metrics.avgSigPower = np.mean(metrics.signal_power)
+        if len(clip_fracs) > 0:
+            metrics.clip_frac = float(np.mean(clip_fracs))
+        if len(clip_maxes) > 0:
+            metrics.clip_max = float(np.max(clip_maxes))
         
         if getattr(metrics, 'avgPower', None) is None:
             metrics.avgPower = np.nan
+        if getattr(metrics, 'avgSigPower', None) is None:
+            metrics.avgSigPower = np.nan
         
-        # 3 - Calculate path loss
-        # Load RX calibration from power_refs.csv for the actual gain setting
-        gain = getattr(self.config.USRP_CONF, 'GAIN', 70)
-        serial = getattr(self.config.USRP_CONF, 'SERIAL', '')
-        self.config.TX_REF_DBM = TX_REF_DBM
-        self.config.RX_REF_DBM = _load_rx_ref(gain, serial)
+        # 3 - Calculate path loss using the campaign-specific link-budget
+        # for A2G: lw1 TX, pn6 RX for A2A: pn3: RX pn6: TX
+        populate_link_budget_config(self.config, default_tx_ref_dbm=TX_REF_DBM)
 
-        metrics.path_loss = np.array([self.calcPathLoss(rcv[peak:peak+_pr_len], self.config.TX_REF_DBM, self.config.RX_REF_DBM) for peak in peak_samples])
-        if metrics.path_loss.any():
+        metrics.path_loss = np.array([
+            self.calcPathLossFromPowerDbfs(power_dbfs, self.config.TX_REF_DBM, self.config.RX_REF_DBM)
+            for power_dbfs in metrics.signal_power
+        ])
+        if len(metrics.path_loss) > 0:
             metrics.avg_pl = np.mean(metrics.path_loss)
-            
+
         if getattr(metrics, 'avg_pl', None) is None:
             metrics.avg_pl = np.nan
         
@@ -504,45 +684,61 @@ class SigProcessor:
             metrics.stage = "Landing"
         
         # 6 - Channel related metrics
-        metrics.snr = np.array([self.calcSNR(rcv[peak:peak+_pr_len], self.ref_signal) for peak in peak_samples])
+        if noise_power_linear > 0.0:
+            metrics.snr = np.array([
+                self.calcMatchedFilterSNR(power_dbfs, noise_power_linear)
+                for power_dbfs in metrics.signal_power
+            ], dtype=float)
+        else:
+            metrics.snr = np.array([
+                self.calcResidualFitSNR(rcv[peak:peak+_pr_len], self.ref_signal)
+                for peak in peak_samples
+            ], dtype=float)
         metrics.avgSnr = np.mean(metrics.snr)
 
-        # 7 - Wideband PSD of this frame (stored for per-frame inspection;
-        #     true slow-time Doppler spectrum is computed in post-processing)
+        metrics.saturation_status = classify_saturation_status(
+            metrics.clip_frac, metrics.clip_max
+        )
+
+        metrics.pl_valid = bool(
+            np.isfinite(metrics.avg_pl)
+            and np.isfinite(metrics.avgSnr)
+            and (metrics.avgSnr > PATHLOSS_MIN_SNR_DB)
+            and (metrics.saturation_status == "clean")
+        )
+
+        # 7 - Wideband PSD of this frame 
         f, Pxx = self.calcWidebandPSD(rcv)
         metrics.doppler_shift = metrics.freq_offset
         metrics.doppler_spectrum = Pxx
 
         # 8 - RMS Delay Spread and K-Factor
-        # Find the main peak in the CIR used for delay spread
-        max_peak_index = np.argmax(np.abs(cir_for_delay_spread))
-
-        # Define the window size, scaled by interpolation rate
-        # Use a smaller window (~2 μs) appropriate for typical delay spreads
-        window_size = 100 * self.interpolate_rate
+        # Crop the CIR around the main peak (~2 us window) for delay-spread stats.
+        max_peak_index = np.argmax(np.abs(xcorr))
+        window_size = 100
         half_window = window_size // 2
 
         start_crop = max(0, max_peak_index - half_window)
-        end_crop = min(len(cir_for_delay_spread), max_peak_index + half_window)
+        end_crop = min(len(xcorr), max_peak_index + half_window)
+        cropped_cir = xcorr[start_crop:end_crop]
 
-        # Crop the CIR to focus on the channel response of a single transmission
-        cropped_cir = cir_for_delay_spread[start_crop:end_crop]
-
-        # Estimate noise floor from AFTER the signal window (not from edge effects at the start)
-        noise_start = end_crop + 100 * self.interpolate_rate
-        noise_end = noise_start + 200 * self.interpolate_rate
-        if noise_end < len(cir_for_delay_spread):
-            noise_floor_pdp = np.mean(np.abs(cir_for_delay_spread[noise_start:noise_end])**2)
+        # Estimate noise floor from AFTER the signal window (avoids start-edge effects).
+        noise_start = end_crop + 100
+        noise_end = noise_start + 200
+        if noise_end < len(xcorr):
+            noise_floor_pdp = np.mean(np.abs(xcorr[noise_start:noise_end])**2)
         else:
             # Fallback: use region before the peak if not enough samples after
-            noise_end_alt = max(0, start_crop - 100 * self.interpolate_rate)
-            noise_start_alt = max(0, noise_end_alt - 200 * self.interpolate_rate)
+            noise_end_alt = max(0, start_crop - 100)
+            noise_start_alt = max(0, noise_end_alt - 200)
             if noise_start_alt < noise_end_alt:
-                noise_floor_pdp = np.mean(np.abs(cir_for_delay_spread[noise_start_alt:noise_end_alt])**2)
+                noise_floor_pdp = np.mean(np.abs(xcorr[noise_start_alt:noise_end_alt])**2)
             else:
                 noise_floor_pdp = np.percentile(np.abs(cropped_cir)**2, 10)
 
-        metrics.rms_delay_spread = self.calcRMSDelaySpread(cropped_cir, sample_rate_for_delay_spread, noise_floor=noise_floor_pdp)
+        metrics.rms_delay_spread = self.calcRMSDelaySpread(
+            cropped_cir, self.config.USRP_CONF.SAMPLE_RATE, noise_floor=noise_floor_pdp,
+        )
         metrics.k_factor = self.calcKFactor(cropped_cir, noise_floor=noise_floor_pdp)
 
         return metrics
