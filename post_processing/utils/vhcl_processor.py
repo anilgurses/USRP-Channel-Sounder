@@ -153,3 +153,24 @@ class Vehicle_Processor:
     
     def get_metrics(self):
         return self.metrics
+
+    def synthesize_stationary(self, node_name, t0, type_label="STATIC"):
+        """Populate self.metrics with a single stationary VehicleMetric for an
+        F2F (or otherwise stationary) campaign. Coords come from the F2F node
+        registry; t0 anchors the metric in time so _nearest() can match against
+        any measurement timestamp.
+        """
+        from utils.f2f_nodes import get_node
+        node = get_node(node_name)
+        metric = VehicleMetric(
+            time=t0,
+            type=type_label,
+            lat=float(node.lat),
+            lon=float(node.lon),
+            alt=float(node.alt),
+            pitch=0.0, yaw=0.0, roll=0.0,
+            vel_x=0.0, vel_y=0.0, vel_z=0.0,
+            heading=0.0,
+        )
+        self.metrics = [metric]
+        return self.metrics
