@@ -23,7 +23,8 @@ pyximport.install(
 
 from ChsTX import Transmitter
 from ChsRX import Receiver
-from usrp_utils import createMultiUSRP, init_sync, configure_role
+from usrp_utils import (createMultiUSRP, init_clock_pps_sources,
+                         align_device_time, configure_role)
 from utils.config_parser import Config
 from utils.logger import Logger
 from utils.tui import RxDashboard
@@ -124,6 +125,7 @@ def _run_rx_cycle(usrp, config, logger, args, manager,
     terminate_event.clear()
 
     configure_role(usrp, config, "RX", rx_subdev=rx_subdev)
+    align_device_time(config, usrp, logger, terminate_event)
 
     stream_args = uhd.usrp.StreamArgs("fc32", "sc16")
     stream_args.channels = [0]
@@ -175,6 +177,7 @@ def _run_tx_cycle(usrp, config, logger, start_epoch, duration, tx_subdev=None):
     terminate_event.clear()
 
     configure_role(usrp, config, "TX", tx_subdev=tx_subdev)
+    align_device_time(config, usrp, logger, terminate_event)
 
     stream_args = uhd.usrp.StreamArgs("fc32", "sc16")
     stream_args.channels = [0]
@@ -278,7 +281,7 @@ def main(args):
         usrp = createMultiUSRP(config)
         logger.info("Using the Device: %s", usrp.get_pp_string())
 
-        init_sync(config, usrp, logger, terminate_event)
+        init_clock_pps_sources(config, usrp, logger, terminate_event)
         usrp.clear_command_time()
 
         node_id = _resolve_node_id(config, getattr(args, "node_id", None))

@@ -132,68 +132,63 @@ def _wait_for_sensor_true(
         time.sleep(sleep_s)
 
 
-def gpsdo_pps_lock(usrp, logger, terminate=None):
-    usrp.set_time_source("gpsdo", 0)
-
-    _wait_for_sensor_true(
-        usrp,
-        "gps_locked",
-        logger,
-        board=0,
-        timeout_s=180,
-        sleep_s=0.1,
-        terminate=terminate,
-    )
-
-    _raise_if_terminating(terminate)
-    time.sleep(1)
-    align_device_time_to_utc(usrp, logger, terminate)
-
-
-def ext_pps_lock(usrp, logger, terminate=None):
-    usrp.set_time_source("external")
-
+def _wait_for_first_pps(usrp, logger, terminate=None):
     last_pps_time = usrp.get_time_last_pps().get_real_secs()
     while last_pps_time == usrp.get_time_last_pps().get_real_secs():
         _raise_if_terminating(terminate)
-        logger.info("Waiting for ref lock")
+        logger.info("Waiting for first PPS")
         time.sleep(0.1)
 
-    _raise_if_terminating(terminate)
-    time.sleep(1)
-    align_device_time_to_utc(usrp, logger, terminate)
 
-
-def init_sync(config, usrp, logger, terminate=None):
+def init_clock_pps_sources(config, usrp, logger, terminate=None):
     check_host_clock_sync(logger)
     if config.USRP_CONF.CLK_REF == "GPSDO":
         usrp.set_clock_source("gpsdo")
-        _wait_for_sensor_true(
-            usrp,
-            "ref_locked",
-            logger,
-            timeout_s=120,
-            sleep_s=1,
-            terminate=terminate,
-        )
+        _wait_for_sensor_true(usrp, "ref_locked", logger,
+                              timeout_s=120, sleep_s=1, terminate=terminate)
         logger.info("Ref locked")
     elif config.USRP_CONF.CLK_REF == "EXT":
         usrp.set_clock_source("external")
-        _wait_for_sensor_true(
-            usrp,
-            "ref_locked",
-            logger,
-            timeout_s=120,
-            sleep_s=1,
-            terminate=terminate,
-        )
+        _wait_for_sensor_true(usrp, "ref_locked", logger,
+                              timeout_s=120, sleep_s=1, terminate=terminate)
         logger.info("Ref locked")
     else:
         usrp.set_clock_source("internal")
 
     if config.USRP_CONF.PPS_REF == "GPSDO":
-        gpsdo_pps_lock(usrp, logger, terminate)
+        usrp.set_time_source("gpsdo", 0)
+        _wait_for_sensor_true(usrp, "gps_locked", logger,
+                              board=0, timeout_s=180, sleep_s=0.1,
+                              terminate=terminate)
+        _wait_for_first_pps(usrp, logger, terminate)
     elif config.USRP_CONF.PPS_REF == "EXT":
-        ext_pps_lock(usrp, logger, terminate)
+        usrp.set_time_source("external")
+        _wait_for_first_pps(usrp, logger, terminate)
+    # No PPS: nothing to do here; align_device_time will set_time_now(0).
+
+
+def align_device_time(config, usrp, logger, terminate=None):
+    if config.USRP_CONF.PPS_REF in ("GPSDO", "EXT"):
+        align_device_time_to_utc(usrp, logger, terminate)
     else:
         usrp.set_time_now(uhd.types.TimeSpec(0.0))
+
+
+def init_sync(config, usrp, logger, terminate=None):
+    init_clock_pps_sources(config, usrp, logger, terminate)
+    align_device_time(config, usrp, logger, terminate)
+
+
+# Retained for any external callers that imported the old names directly.
+def gpsdo_pps_lock(usrp, logger, terminate=None):
+    usrp.set_time_source("gpsdo", 0)
+    _wait_for_sensor_true(usrp, "gps_locked", logger,
+                          board=0, timeout_s=180, sleep_s=0.1, terminate=terminate)
+    _wait_for_first_pps(usrp, logger, terminate)
+    align_device_time_to_utc(usrp, logger, terminate)
+
+
+def ext_pps_lock(usrp, logger, terminate=None):
+    usrp.set_time_source("external")
+    _wait_for_first_pps(usrp, logger, terminate)
+    align_device_time_to_utc(usrp, logger, terminate)
