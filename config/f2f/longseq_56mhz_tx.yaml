@@ -54,8 +54,10 @@ USRP:
   SAMPLE_RATE: 5.6E+7
   CENTER_FREQ: 3.4e+9
   INIT_DELAY: 2.0
-  CLK_REF: EXT           # GPSDO-disciplined 10 MHz between nodes
+  CLK_REF: EXT           
   PPS_REF: EXT
+  TX_SUBDEV: "A:0"       
+  TX_CHANNEL_LABEL: "A"  
 INTERPOLATION:
   ENABLED: false
   SPS: 8

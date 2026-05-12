@@ -355,12 +355,14 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--duration", type=float, default=None,
-        help="Capture duration in seconds. Manual mode only; ignored when "
-             "--coordinator is set (coordinator supplies it per cycle).",
+        help="Capture duration in seconds. Without --start-epoch the run starts "
+             "after INIT_DELAY and stops <duration> seconds later. Ignored when "
+             "--coordinator is set (the coordinator supplies it per cycle).",
     )
     parser.add_argument(
         "--start-epoch", type=float, default=None,
-        help="UTC start epoch (float seconds). Manual override; bypasses coordinator.",
+        help="Pin the start to a specific UTC second. Optional; only needed "
+             "when coordinating multiple nodes without the daemon.",
     )
     parser.add_argument(
         "--rx-channel-label", type=str, default=None,

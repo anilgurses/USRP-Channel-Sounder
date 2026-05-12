@@ -47,9 +47,8 @@ class Transmitter:
         else:
             sched_epoch = usrp.get_time_now().get_real_secs() + self.config.USRP_CONF.INIT_DELAY
         scheduler = PpsSlotScheduler(period, sched_epoch)
-        deadline = (float(self.start_epoch) + float(self.duration)
-                    if self.start_epoch is not None and self.duration is not None
-                    else None)
+        deadline = (sched_epoch + float(self.duration)
+                    if self.duration is not None else None)
         next_slot_index = 0
         logger.info(
             "TX_SCHED_SYNC epoch=%.9f period=%.3fHz slots_per_sec=%d slot=%.9fs",
