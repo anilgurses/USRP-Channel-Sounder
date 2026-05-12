@@ -1,4 +1,5 @@
 import argparse
+import gc
 import json
 import signal
 import socket
@@ -118,11 +119,23 @@ def stop_workers(threads, rcv_prc, logger):
             rcv_prc.join(timeout=5)
 
 
+def _release_streamer(streamer, logger):
+    try:
+        del streamer
+    except Exception as exc:
+        logger.warn("streamer del failed: %s", exc)
+    gc.collect()
+    # Tiny settle delay for UHD
+    time.sleep(0.2)
+
+
 def _run_rx_cycle(usrp, config, logger, args, manager,
                   start_epoch, duration, channel_label,
                   rx_subdev=None, tx_node=None, out_subdir=None):
     global terminate_event
     terminate_event.clear()
+
+    gc.collect()
 
     configure_role(usrp, config, "RX", rx_subdev=rx_subdev)
     align_device_time(config, usrp, logger, terminate_event)
@@ -169,12 +182,16 @@ def _run_rx_cycle(usrp, config, logger, args, manager,
         rcv_prc.terminate()
         rcv_prc.join(timeout=5)
 
+    # Explicit cleanup before the next subdev change.
+    _release_streamer(rx_streamer, logger)
     return receiver
 
 
 def _run_tx_cycle(usrp, config, logger, start_epoch, duration, tx_subdev=None):
     global terminate_event
     terminate_event.clear()
+
+    gc.collect()
 
     configure_role(usrp, config, "TX", tx_subdev=tx_subdev)
     align_device_time(config, usrp, logger, terminate_event)
@@ -192,6 +209,7 @@ def _run_tx_cycle(usrp, config, logger, start_epoch, duration, tx_subdev=None):
     )
     tx_thread.start()
     tx_thread.join()
+    _release_streamer(tx_streamer, logger)
     return transmitter
 
 
