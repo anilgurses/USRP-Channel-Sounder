@@ -1,0 +1,75 @@
+MODE: RX
+# F2F campaign RX (paired with longseq_56mhz_tx.yaml). See TX config for more detail
+CONFIG_VERSION: v2
+PERIOD: 10
+MAX_FREQ_OFF: 15000.0
+CALIBRATION:
+  TYPE: INTERNAL
+  RX_REF: 0
+  RX_REF_CSV: '../../config/rx_pwr_ref.csv'
+  TX_REF: 0
+  TX_REF_CSV: ''
+WAVEFORM: ZC
+RECV_OPTS:
+  DURATION: 0.001
+  CALC:
+    POWER: true
+    PL: false
+    PLOT: false
+  OUTPUT_TYPE: 'npz'
+FILTER:
+  ENABLED: false
+  TYPE: LP
+  BW: 2e+6
+WAV_OPTS:
+  GUARD_LEN_SAMPS: 512
+  CHIRP:
+    COMPLEX: true
+    PHASE: 0
+    COMPRESS: false
+    PULSE_RATIO: 10
+    DURATION: 1.0
+    BW: 5.6e+7
+  ZC:
+    ROOT_IND: 1
+    SEQ_LEN: 1021
+    NUM_REPEATS: 4
+  PN:
+    POLY: [1, 0, 0, 0, 0, 1, 1, 0, 1, 1]
+    SEQ_LEN: 1023
+    COMPLEX_BB: true
+  OFDM:
+    SUBCARRIERS: 492
+    N_PILOTS: 492
+    N_FFT: 512
+    CP_LEN: 128
+    DC_GUARD_BINS: 9
+    EDGE_GUARD_BINS: 0
+    SEED: 2026
+    NORMALIZE_PEAK: true
+    TARGET_PEAK: 0.9
+USRP:
+  SERIAL: ''             
+  NUM_FRAMES: 64
+  GAIN: 76               
+  SAMPLE_RATE: 5.6E+7
+  CENTER_FREQ: 3.4e+9
+  INIT_DELAY: 0.5
+  CLK_REF: EXT
+  PPS_REF: EXT
+  RX_SUBDEV: "A:0"       #  "A:0" or "B:0" 
+  RX_CHANNEL_LABEL: "A"
+INTERPOLATION:
+  ENABLED: false
+  SPS: 8
+  NUM_TAPS: 101
+  ROLLOFF: 0.35
+  THR_OFF: 25
+GPS:
+  ENABLED: false
+  SOURCE: gnss
+  DIR: /dev/ttyACM0
+EXPERIMENT_TYPE: f2f
+TX_NODE: ''              # which node is transmitting
+RX_NODE: ''              # node's identity (lw1 .. lw5)
+NOTE: "F2F long-seq (56 MHz, ZC-1021x4) - RX"
