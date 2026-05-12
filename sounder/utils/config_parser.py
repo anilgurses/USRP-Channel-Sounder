@@ -13,6 +13,8 @@ class USRP:
     PPS_REF: str = "EXT"
     RX_SUBDEV: str = "A:0"
     RX_CHANNEL_LABEL: str = "A"
+    TX_SUBDEV: str = "A:0"
+    TX_CHANNEL_LABEL: str = "A"
 
 @dataclass
 class Calibration:
@@ -143,6 +145,8 @@ class Config(object):
             temp_usrp["PPS_REF"],
             RX_SUBDEV=str(temp_usrp.get("RX_SUBDEV", "A:0")),
             RX_CHANNEL_LABEL=str(temp_usrp.get("RX_CHANNEL_LABEL", "A")),
+            TX_SUBDEV=str(temp_usrp.get("TX_SUBDEV", "A:0")),
+            TX_CHANNEL_LABEL=str(temp_usrp.get("TX_CHANNEL_LABEL", "A")),
         )
 
         # Interpolation settings

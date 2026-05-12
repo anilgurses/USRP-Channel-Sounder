@@ -40,6 +40,8 @@ def signal_handling(_signum, _frame):
 def configure_usrp(usrp, config):
     if config.MODE == "RX":
         usrp.set_rx_subdev_spec(uhd.usrp.SubdevSpec(config.USRP_CONF.RX_SUBDEV))
+    elif config.MODE == "TX":
+        usrp.set_tx_subdev_spec(uhd.usrp.SubdevSpec(config.USRP_CONF.TX_SUBDEV))
 
     usrp.set_rx_rate(config.USRP_CONF.SAMPLE_RATE, 0)
     usrp.set_tx_rate(config.USRP_CONF.SAMPLE_RATE, 0)
