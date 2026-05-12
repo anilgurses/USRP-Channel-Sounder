@@ -76,6 +76,7 @@ def configure_role(usrp, config, role, rx_subdev=None, tx_subdev=None):
     if role == "RX":
         subdev = rx_subdev or config.USRP_CONF.RX_SUBDEV
         usrp.set_rx_subdev_spec(uhd.usrp.SubdevSpec(subdev))
+        usrp.set_rx_antenna("RX2", 0)
         rx_gain = (config.USRP_CONF.RX_GAIN
                    if config.USRP_CONF.RX_GAIN is not None
                    else config.USRP_CONF.GAIN)
