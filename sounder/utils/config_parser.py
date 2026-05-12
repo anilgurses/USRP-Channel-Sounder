@@ -11,6 +11,8 @@ class USRP:
     INIT_DELAY: float = 2.0
     CLK_REF: str = "INT"
     PPS_REF: str = "EXT"
+    RX_SUBDEV: str = "A:0"
+    RX_CHANNEL_LABEL: str = "A"
 
 @dataclass
 class Calibration:
@@ -139,6 +141,8 @@ class Config(object):
             temp_usrp["INIT_DELAY"],
             temp_usrp["CLK_REF"],
             temp_usrp["PPS_REF"],
+            RX_SUBDEV=str(temp_usrp.get("RX_SUBDEV", "A:0")),
+            RX_CHANNEL_LABEL=str(temp_usrp.get("RX_CHANNEL_LABEL", "A")),
         )
 
         # Interpolation settings

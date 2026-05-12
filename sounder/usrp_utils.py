@@ -1,6 +1,68 @@
+import math
+import shutil
+import subprocess
 import time
 
 import uhd
+
+
+def align_device_time_to_utc(usrp, logger, terminate=None):
+    now = time.time()
+    target_utc = math.ceil(now) + 1
+    # If we're within 200 ms of the next PPS edge, the USRP may not see
+    # the arming command before the edge fires. Wait one tick
+    # PCs are NTP synced. Therefore, 200ms is not a problem here
+    if target_utc - now < 0.2:
+        time.sleep(0.3)
+        now = time.time()
+        target_utc = math.ceil(now) + 1
+    _raise_if_terminating(terminate)
+    usrp.set_time_next_pps(uhd.types.TimeSpec(float(target_utc)))
+    wait_s = max(0.0, target_utc - time.time()) + 0.3
+    time.sleep(wait_s)
+    observed = usrp.get_time_last_pps().get_real_secs()
+    if abs(observed - target_utc) > 0.5:
+        raise RuntimeError(
+            f"UTC alignment failed: device last_pps={observed:.3f} expected~={target_utc} "
+            "(check host NTP / GPSDO PPS wiring)"
+        )
+    logger.info(
+        "device time UTC-aligned: target=%d, last_pps=%.3f, host=%.3f",
+        target_utc, observed, time.time(),
+    )
+
+
+def check_host_clock_sync(logger):
+    """
+    The UTC alignment relies on `time.time()` being accurate to better than
+    0.5 s. If chrony/timedatectl says otherwise, log loudly  
+    """
+    if shutil.which("timedatectl"):
+        try:
+            out = subprocess.run(
+                ["timedatectl", "show", "-p", "NTPSynchronized", "--value"],
+                check=False, capture_output=True, text=True, timeout=2,
+            )
+            value = (out.stdout or "").strip().lower()
+            if value == "yes":
+                logger.info("host clock: NTPSynchronized=yes")
+                return
+            logger.warn("host clock NOT NTP-synchronised (timedatectl: %r). "
+                        "UTC alignment may land on the wrong second.", value or "no output")
+            return
+        except (OSError, subprocess.SubprocessError) as exc:
+            logger.warn("could not query timedatectl: %s", exc)
+    if shutil.which("chronyc"):
+        try:
+            out = subprocess.run(
+                ["chronyc", "tracking"], check=False, capture_output=True,
+                text=True, timeout=2,
+            )
+            logger.info("chronyc tracking:\n%s", (out.stdout or out.stderr).strip())
+            return
+        except (OSError, subprocess.SubprocessError) as exc:
+            logger.warn("could not query chronyc: %s", exc)
+    logger.warn("no NTP query tool found (timedatectl / chronyc); cannot verify host clock")
 
 
 def createMultiUSRP(config):
@@ -48,17 +110,10 @@ def gpsdo_pps_lock(usrp, logger, terminate=None):
 
     _raise_if_terminating(terminate)
     time.sleep(1)
-    usrp.set_time_next_pps(uhd.types.TimeSpec(1.0))
-    _raise_if_terminating(terminate)
-    time.sleep(1)
-
-    logger.info("GPS Time %s", usrp.get_mboard_sensor("gps_time").to_int())
-    logger.info("USRP Time %s", usrp.get_time_last_pps().get_real_secs())
+    align_device_time_to_utc(usrp, logger, terminate)
 
 
 def ext_pps_lock(usrp, logger, terminate=None):
-    # Can only be used on B210
-    # TODO add check for this
     usrp.set_time_source("external")
 
     last_pps_time = usrp.get_time_last_pps().get_real_secs()
@@ -69,15 +124,11 @@ def ext_pps_lock(usrp, logger, terminate=None):
 
     _raise_if_terminating(terminate)
     time.sleep(1)
-    usrp.set_time_unknown_pps(uhd.types.TimeSpec(0.0))
-    _raise_if_terminating(terminate)
-    time.sleep(1)
-
-    logger.info("Ref. clock and time lock configured")
-    logger.info("USRP Time %s", usrp.get_time_last_pps().get_real_secs())
+    align_device_time_to_utc(usrp, logger, terminate)
 
 
 def init_sync(config, usrp, logger, terminate=None):
+    check_host_clock_sync(logger)
     if config.USRP_CONF.CLK_REF == "GPSDO":
         usrp.set_clock_source("gpsdo")
         _wait_for_sensor_true(

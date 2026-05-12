@@ -6,8 +6,10 @@ import uhd
 
 
 class Transmitter:
-    def __init__(self, config):
+    def __init__(self, config, start_epoch=None, duration=None):
         self.config = config
+        self.start_epoch = start_epoch
+        self.duration = duration
 
     def transmit(self, usrp, tx_stream, logger, terminate):
         wv = Waveform(self.config)
@@ -39,10 +41,14 @@ class Transmitter:
         # Scheduling transmission
         period = self.config.PERIOD
         inc_sec = 1 / period
-        scheduler = PpsSlotScheduler(
-            period,
-            usrp.get_time_now().get_real_secs() + self.config.USRP_CONF.INIT_DELAY
-        )
+        if self.start_epoch is not None:
+            sched_epoch = float(self.start_epoch)
+        else:
+            sched_epoch = usrp.get_time_now().get_real_secs() + self.config.USRP_CONF.INIT_DELAY
+        scheduler = PpsSlotScheduler(period, sched_epoch)
+        deadline = (float(self.start_epoch) + float(self.duration)
+                    if self.start_epoch is not None and self.duration is not None
+                    else None)
         next_slot_index = 0
         logger.info(
             "TX_SCHED_SYNC epoch=%.9f period=%.3fHz slots_per_sec=%d slot=%.9fs",
@@ -53,6 +59,10 @@ class Transmitter:
         )
 
         while not terminate.is_set():
+            if deadline is not None and usrp.get_time_now().get_real_secs() >= deadline:
+                logger.info("TX_DEADLINE_REACHED idx=%d deadline=%.6f", burst_index, deadline)
+                terminate.set()
+                break
             burst_index += 1
             scheduled_tx_start = scheduler.time_for_index(next_slot_index)
 

@@ -41,10 +41,15 @@ class Receiver:
     # cdef ConfigType config
     # cdef int plot
 
-    def __init__(self, config, plot):
+    def __init__(self, config, plot, start_epoch=None, duration=None, channel_label=None):
         self.config = config
         self.plot = plot
         self.output_type = self.config.RX.OUTPUT_TYPE
+        self.start_epoch = start_epoch
+        self.duration = duration
+        self.channel_label = (channel_label
+                              if channel_label is not None
+                              else config.USRP_CONF.RX_CHANNEL_LABEL)
 
     def _queue_depth(self, que):
         try:
@@ -323,14 +328,6 @@ class Receiver:
         }
 
     def estimate_ofdm_channel(self, sig, first_peak_idx, logger):
-        """
-        Pilot-based per-subcarrier channel estimate, RSRP and SNR.
-
-        Layout from WaveformGenerator: first_peak_idx points at the start of
-        ZC #1. The OFDM CP begins n_rep*(seq_len+guard) samples later (one
-        guard between each ZC pair plus one guard before OFDM = n_rep guards
-        for n_rep ZCs). The OFDM symbol body starts cp_len samples after that.
-        """
         n_fft = self._ofdm_n_fft
         cp_len = self._ofdm_cp_len
         positions = self._ofdm_pilot_pos
@@ -430,14 +427,15 @@ class Receiver:
         # Initial filter taps
         # cdef np.ndarray prb_filter_states = np.zeros(prb_intr.size-1, dtype=np.complex64)
 
-        out_dir = f"../measurements/{datetime.today().strftime('%Y-%m-%d_%H_%M')}"
+        ts_str = datetime.today().strftime('%Y-%m-%d_%H_%M')
+        out_dir = f"../measurements/{ts_str}_ch{self.channel_label}"
         if not os.path.exists(out_dir):
             os.makedirs(out_dir)
 
         with open(f"{out_dir}/config.yaml", "w") as f:  # Save config next to measurement.
             yaml.dump(self.config.to_dict(), f, default_flow_style=False)
 
-        while not terminate.is_set():
+        while not terminate.is_set() or not que.empty():
             try:
                 recv_buffer, num_rx_samps, rcv_time, gps_info, time_info, pps_info = que.get(timeout=0.5)
             except Empty:
@@ -565,6 +563,7 @@ class Receiver:
                          burst      =  burst if burst is not None else {},
                          detect     =  detect if detect is not None else {},
                          ofdm_meas  =  ofdm_meas if ofdm_meas is not None else {},
+                         channel_label = self.channel_label,
                          allow_pickle = True
                         )
             elif self.config.RX.OUTPUT_TYPE == "mat":
@@ -580,6 +579,7 @@ class Receiver:
                             "burst": burst if burst is not None else {},
                             "detect": detect if detect is not None else {},
                             "ofdm_meas": ofdm_meas if ofdm_meas is not None else {},
+                            "channel_label": self.channel_label,
                         })
 
 
@@ -642,10 +642,14 @@ class Receiver:
         )
 
         period = self.config.PERIOD
-        scheduler = PpsSlotScheduler(
-            period,
-            usrp.get_time_now().get_real_secs() + self.config.USRP_CONF.INIT_DELAY
-        )
+        if self.start_epoch is not None:
+            sched_epoch = float(self.start_epoch)
+        else:
+            sched_epoch = usrp.get_time_now().get_real_secs() + self.config.USRP_CONF.INIT_DELAY
+        scheduler = PpsSlotScheduler(period, sched_epoch)
+        deadline = (float(self.start_epoch) + float(self.duration)
+                    if self.start_epoch is not None and self.duration is not None
+                    else None)
         inc_sec = 1 / period
         next_slot_index = 0
         logger.info(
@@ -657,6 +661,10 @@ class Receiver:
         )
 
         while not terminate.is_set():
+            if deadline is not None and usrp.get_time_now().get_real_secs() >= deadline:
+                logger.info("RX_DEADLINE_REACHED idx=%d deadline=%.6f", burst_index, deadline)
+                terminate.set()
+                break
             try:
                 burst_index += 1
                 scheduled_rx_start = scheduler.time_for_index(next_slot_index)

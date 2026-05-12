@@ -1,5 +1,7 @@
 import argparse
+import json
 import signal
+import socket
 import tempfile
 import time
 import threading
@@ -36,6 +38,9 @@ def signal_handling(_signum, _frame):
 
 
 def configure_usrp(usrp, config):
+    if config.MODE == "RX":
+        usrp.set_rx_subdev_spec(uhd.usrp.SubdevSpec(config.USRP_CONF.RX_SUBDEV))
+
     usrp.set_rx_rate(config.USRP_CONF.SAMPLE_RATE, 0)
     usrp.set_tx_rate(config.USRP_CONF.SAMPLE_RATE, 0)
 
@@ -47,6 +52,54 @@ def configure_usrp(usrp, config):
     usrp.set_tx_gain(config.USRP_CONF.GAIN, 0)
     usrp.clear_command_time()
     time.sleep(0.1)  # Allow LO to lock.
+
+
+def _resolve_node_id(config, override):
+    if override:
+        return str(override)
+    for attr in ("TX_NODE", "RX_NODE"):
+        value = getattr(config, attr, "") or config.raw.get(attr, "") if hasattr(config, "raw") else ""
+        if value:
+            return str(value)
+    return socket.gethostname()
+
+
+def _handshake_with_coordinator(addr, node_id, mode, logger, timeout_s=600.0):
+    """Block until the coordinator broadcasts START. Returns
+    (start_epoch, duration, channel_label)."""
+    host, _, port = addr.partition(":")
+    if not host or not port:
+        raise ValueError(f"--coordinator must be HOST:PORT, got {addr!r}")
+    port = int(port)
+    logger.info("connecting to coordinator %s:%d as %s/%s", host, port, node_id, mode)
+    sock = socket.create_connection((host, port), timeout=30.0)
+    sock.settimeout(timeout_s)
+    try:
+        hello = json.dumps({"hello": node_id, "mode": mode}) + "\n"
+        sock.sendall(hello.encode("utf-8"))
+        buf = b""
+        while b"\n" not in buf:
+            chunk = sock.recv(4096)
+            if not chunk:
+                raise RuntimeError("coordinator closed connection before sending START")
+            buf += chunk
+            if len(buf) > 65536:
+                raise RuntimeError("coordinator sent oversized message")
+        line, _ = buf.split(b"\n", 1)
+        msg = json.loads(line.decode("utf-8"))
+    finally:
+        try:
+            sock.close()
+        except OSError:
+            pass
+    if msg.get("command") != "start":
+        raise RuntimeError(f"unexpected coordinator message: {msg!r}")
+    start_epoch = float(msg["epoch"])
+    duration = float(msg["duration"])
+    channel_label = str(msg.get("channel_label", "A"))
+    logger.info("coordinator START: epoch=%.6f duration=%.3f channel_label=%s",
+                start_epoch, duration, channel_label)
+    return start_epoch, duration, channel_label
 
 
 def stop_workers(threads, rcv_prc, logger):
@@ -90,6 +143,17 @@ def main(args):
         init_sync(config, usrp, logger, terminate_event)
         usrp.clear_command_time()
 
+        node_id = _resolve_node_id(config, getattr(args, "node_id", None))
+        start_epoch = args.start_epoch
+        duration = args.duration
+        channel_label = (args.rx_channel_label
+                         if args.rx_channel_label is not None
+                         else config.USRP_CONF.RX_CHANNEL_LABEL)
+        if args.coordinator:
+            start_epoch, duration, channel_label = _handshake_with_coordinator(
+                args.coordinator, node_id, config.MODE, logger,
+            )
+
         stream_args = uhd.usrp.StreamArgs("fc32", "sc16")
         stream_args.channels = [0]
 
@@ -98,7 +162,7 @@ def main(args):
             pwr_queue = manager.Queue()
 
             if config.MODE == "TX":
-                transmitter = Transmitter(config)
+                transmitter = Transmitter(config, start_epoch=start_epoch, duration=duration)
                 tx_streamer = usrp.get_tx_stream(stream_args)
                 tx_thread = threading.Thread(
                     target=transmitter.transmit,
@@ -109,7 +173,11 @@ def main(args):
                 threads.append(tx_thread)
                 tx_thread.start()
             else:
-                receiver = Receiver(config, args.plot)
+                receiver = Receiver(
+                    config, args.plot,
+                    start_epoch=start_epoch, duration=duration,
+                    channel_label=channel_label,
+                )
                 rx_streamer = usrp.get_rx_stream(stream_args)
                 rx_thread = threading.Thread(
                     target=receiver.receive,
@@ -178,6 +246,29 @@ if __name__ == "__main__":
         type=str,
         default="../config/rx_config.yaml",
         help="Path to YAML config file.",
+    )
+    parser.add_argument(
+        "--coordinator", type=str, default=None, metavar="HOST:PORT",
+        help="Connect to a coordinator daemon; wait for START before capturing.",
+    )
+    parser.add_argument(
+        "--duration", type=float, default=None,
+        help="Capture duration in seconds. Required for bounded captures; "
+             "ignored if --coordinator is set (the coordinator supplies it).",
+    )
+    parser.add_argument(
+        "--start-epoch", type=float, default=None,
+        help="UTC start epoch (float seconds). Manual override, bypasses coordinator.",
+    )
+    parser.add_argument(
+        "--rx-channel-label", type=str, default=None,
+        help="Label for the active RX daughterboard (A or B); used to tag the "
+             "measurement directory and per-burst metadata. Overrides config.",
+    )
+    parser.add_argument(
+        "--node-id", type=str, default=None,
+        help="Node identifier sent to the coordinator. Defaults to "
+             "config.TX_NODE/RX_NODE, falling back to hostname.",
     )
 
     parsed_args = parser.parse_args()
