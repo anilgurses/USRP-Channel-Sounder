@@ -58,6 +58,7 @@ class _NodeConnection:
 class _CyclePlan:
     cycle_index: int
     tx_node: str
+    tx_subdev: str
     rx_subdev: str
     channel_label: str
 
@@ -142,19 +143,32 @@ def _channel_label_for_subdev(subdev: str, all_subdevs: list[str]) -> str:
     return subdev.upper()
 
 
-def _build_sweep(tx_nodes: list[str], subdevs: list[str]) -> list[_CyclePlan]:
-    """Build the cycle list: outer = TX rotation, inner = subdev."""
+def _build_sweep(tx_nodes: list[str], tx_subdevs: list[str],
+                 rx_subdevs: list[str]) -> list[_CyclePlan]:
+    """Build the cycle list. Loop order, outermost to innermost:
+        TX-node rotation -> TX subdev -> RX subdev.
+
+    Channel label encoding:
+      - Only one TX subdev: label = RX-subdev letter (e.g. "A", "B").
+      - Multiple TX subdevs: label = "<TX><RX>" (e.g. "AA", "AB", "BA", "BB").
+    """
     cycles: list[_CyclePlan] = []
+    multi_tx = len(set(tx_subdevs)) > 1
     idx = 0
     for tx in tx_nodes:
-        for subdev in subdevs:
-            cycles.append(_CyclePlan(
-                cycle_index=idx,
-                tx_node=tx.strip().lower(),
-                rx_subdev=subdev,
-                channel_label=_channel_label_for_subdev(subdev, subdevs),
-            ))
-            idx += 1
+        for tx_subdev in tx_subdevs:
+            for rx_subdev in rx_subdevs:
+                rx_letter = _channel_label_for_subdev(rx_subdev, rx_subdevs)
+                tx_letter = _channel_label_for_subdev(tx_subdev, tx_subdevs)
+                label = (f"{tx_letter}{rx_letter}" if multi_tx else rx_letter)
+                cycles.append(_CyclePlan(
+                    cycle_index=idx,
+                    tx_node=tx.strip().lower(),
+                    tx_subdev=tx_subdev,
+                    rx_subdev=rx_subdev,
+                    channel_label=label,
+                ))
+                idx += 1
     return cycles
 
 
@@ -191,12 +205,13 @@ def run_single_shot(host: str, port: int, expected: int,
 
 
 def run_sweep(host: str, port: int, expected: int,
-              tx_nodes: list[str], subdevs: list[str],
+              tx_nodes: list[str], tx_subdevs: list[str],
+              rx_subdevs: list[str],
               duration: float, lead_first_s: float, lead_per_cycle_s: float,
               cycle_ack_timeout_s: float, hello_timeout_s: float,
               manifest_dir: Path) -> int:
     sweep_id = "sweep_" + datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%SZ")
-    cycles = _build_sweep(tx_nodes, subdevs)
+    cycles = _build_sweep(tx_nodes, tx_subdevs, rx_subdevs)
     manifest_path = manifest_dir / sweep_id / "manifest.json"
     manifest = {
         "sweep_id": sweep_id,
@@ -206,7 +221,8 @@ def run_sweep(host: str, port: int, expected: int,
         "lead_per_cycle_s": float(lead_per_cycle_s),
         "expected_nodes": [],  # filled after HELLO
         "tx_nodes": list(tx_nodes),
-        "subdevs": list(subdevs),
+        "tx_subdevs": list(tx_subdevs),
+        "rx_subdevs": list(rx_subdevs),
         "cycles": [],
     }
 
@@ -233,14 +249,15 @@ def run_sweep(host: str, port: int, expected: int,
                 "epoch": float(epoch),
                 "duration": float(duration),
                 "tx_node": plan.tx_node,
+                "tx_subdev": plan.tx_subdev,
                 "rx_subdev": plan.rx_subdev,
                 "channel_label": plan.channel_label,
                 "sweep_id": sweep_id,
             }
             print(f"\n[coordinator] cycle {plan.cycle_index+1}/{len(cycles)}: "
-                  f"TX={plan.tx_node}  rx_subdev={plan.rx_subdev}  "
-                  f"label={plan.channel_label}  epoch={epoch:.3f} "
-                  f"(in {epoch - time.time():.2f}s)")
+                  f"TX={plan.tx_node}  tx_subdev={plan.tx_subdev}  "
+                  f"rx_subdev={plan.rx_subdev}  label={plan.channel_label}  "
+                  f"epoch={epoch:.3f} (in {epoch - time.time():.2f}s)")
             _broadcast(alive_nodes, cycle_msg)
 
             # Wait for cycle_done from every alive node, with a deadline
@@ -252,6 +269,7 @@ def run_sweep(host: str, port: int, expected: int,
                 "epoch": float(epoch),
                 "duration": float(duration),
                 "tx_node": plan.tx_node,
+                "tx_subdev": plan.tx_subdev,
                 "rx_subdev": plan.rx_subdev,
                 "channel_label": plan.channel_label,
                 "completed": [],
@@ -333,9 +351,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--sweep-tx-nodes", default=None,
                         help="Comma-separated TX rotation, e.g. 'lw1,lw2,lw3,lw4,lw5'. "
                              "Triggers sweep mode.")
-    parser.add_argument("--sweep-subdevs", default="A:A,A:B",
-                        help="Comma-separated subdev list (inner loop). "
+    parser.add_argument("--sweep-rx-subdevs", "--sweep-subdevs",
+                        dest="sweep_rx_subdevs", default="A:A,A:B",
+                        help="Comma-separated RX subdev list (innermost loop). "
                              "Default A:A,A:B (B210/B205mini). For X310/N210 use A:0,B:0.")
+    parser.add_argument("--sweep-tx-subdevs", default="A:A",
+                        help="Comma-separated TX subdev list (middle loop). "
+                             "Default A:A (no TX-side cycling). Pass e.g. A:A,A:B "
+                             "to also iterate the TX daughterboard channel.")
     parser.add_argument("--manifest-dir", default=str(Path(__file__).resolve().parent.parent / "sweeps"),
                         help="Directory where the sweep manifest.json is written.")
     args = parser.parse_args(argv)
@@ -347,14 +370,17 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.sweep_tx_nodes:
         tx_nodes = [s.strip().lower() for s in args.sweep_tx_nodes.split(",") if s.strip()]
-        subdevs = [s.strip() for s in args.sweep_subdevs.split(",") if s.strip()]
+        rx_subdevs = [s.strip() for s in args.sweep_rx_subdevs.split(",") if s.strip()]
+        tx_subdevs = [s.strip() for s in args.sweep_tx_subdevs.split(",") if s.strip()]
         if not tx_nodes:
             parser.error("--sweep-tx-nodes must list at least one node")
-        if not subdevs:
-            parser.error("--sweep-subdevs must list at least one subdev spec")
+        if not rx_subdevs:
+            parser.error("--sweep-rx-subdevs must list at least one subdev spec")
+        if not tx_subdevs:
+            parser.error("--sweep-tx-subdevs must list at least one subdev spec")
         return run_sweep(
             host=args.host, port=args.port, expected=args.expected_nodes,
-            tx_nodes=tx_nodes, subdevs=subdevs,
+            tx_nodes=tx_nodes, tx_subdevs=tx_subdevs, rx_subdevs=rx_subdevs,
             duration=args.duration,
             lead_first_s=args.lead_s,
             lead_per_cycle_s=args.lead_per_cycle_s,

@@ -230,15 +230,17 @@ def _sweep_loop(usrp, config, logger, args, manager, coord, node_id):
         duration = float(msg["duration"])
         tx_node = str(msg["tx_node"]).lower()
         rx_subdev = str(msg["rx_subdev"])
+        tx_subdev = str(msg.get("tx_subdev", "")) or None
         channel_label = str(msg.get("channel_label", "A"))
         sweep_id = str(msg.get("sweep_id", "sweep"))
 
         is_tx = (node_id.lower() == tx_node)
         role = "TX" if is_tx else "RX"
         logger.info(
-            "CYCLE_START idx=%d/%d role=%s tx=%s rx_subdev=%s ch=%s epoch=%.3f dur=%.1f",
-            cycle_index + 1, total, role, tx_node, rx_subdev, channel_label,
-            start_epoch, duration,
+            "CYCLE_START idx=%d/%d role=%s tx=%s tx_subdev=%s rx_subdev=%s "
+            "ch=%s epoch=%.3f dur=%.1f",
+            cycle_index + 1, total, role, tx_node, tx_subdev or "(default)",
+            rx_subdev, channel_label, start_epoch, duration,
         )
 
         try:
@@ -246,6 +248,7 @@ def _sweep_loop(usrp, config, logger, args, manager, coord, node_id):
                 runner = _run_tx_cycle(
                     usrp, config, logger,
                     start_epoch=start_epoch, duration=duration,
+                    tx_subdev=tx_subdev,
                 )
                 n_frames = int(getattr(runner, "frame_count", 0))
             else:
