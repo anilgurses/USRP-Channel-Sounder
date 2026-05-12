@@ -10,6 +10,7 @@ class Transmitter:
         self.config = config
         self.start_epoch = start_epoch
         self.duration = duration
+        self.frame_count = 0
 
     def transmit(self, usrp, tx_stream, logger, terminate):
         wv = Waveform(self.config)
@@ -64,6 +65,7 @@ class Transmitter:
                 terminate.set()
                 break
             burst_index += 1
+            self.frame_count = burst_index
             scheduled_tx_start = scheduler.time_for_index(next_slot_index)
 
             usrp_time = usrp.get_time_now().get_real_secs()

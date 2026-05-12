@@ -15,6 +15,9 @@ class USRP:
     RX_CHANNEL_LABEL: str = "A"
     TX_SUBDEV: str = "A:0"
     TX_CHANNEL_LABEL: str = "A"
+    # Per-role gain overrides. When unset (None), fall back to GAIN
+    TX_GAIN: float = None
+    RX_GAIN: float = None
 
 @dataclass
 class Calibration:
@@ -147,6 +150,8 @@ class Config(object):
             RX_CHANNEL_LABEL=str(temp_usrp.get("RX_CHANNEL_LABEL", "A")),
             TX_SUBDEV=str(temp_usrp.get("TX_SUBDEV", "A:0")),
             TX_CHANNEL_LABEL=str(temp_usrp.get("TX_CHANNEL_LABEL", "A")),
+            TX_GAIN=(float(temp_usrp["TX_GAIN"]) if "TX_GAIN" in temp_usrp else None),
+            RX_GAIN=(float(temp_usrp["RX_GAIN"]) if "RX_GAIN" in temp_usrp else None),
         )
 
         # Interpolation settings

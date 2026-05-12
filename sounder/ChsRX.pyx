@@ -41,7 +41,8 @@ class Receiver:
     # cdef ConfigType config
     # cdef int plot
 
-    def __init__(self, config, plot, start_epoch=None, duration=None, channel_label=None):
+    def __init__(self, config, plot, start_epoch=None, duration=None,
+                 channel_label=None, out_subdir=None, tx_node=None):
         self.config = config
         self.plot = plot
         self.output_type = self.config.RX.OUTPUT_TYPE
@@ -50,6 +51,13 @@ class Receiver:
         self.channel_label = (channel_label
                               if channel_label is not None
                               else config.USRP_CONF.RX_CHANNEL_LABEL)
+        # When set, the sweep loop supplies an explicit output subdirectory
+        # (e.g. "sweep_<id>/cycle_<NN>_tx<X>_ch<A>") and the TX node label so
+        # the post-processor can route campaign dirs by (TX, RX, channel)
+        # without parsing timestamps.
+        self.out_subdir = out_subdir
+        self.tx_node = tx_node
+        self.frame_count = 0
 
     def _queue_depth(self, que):
         try:
@@ -427,8 +435,11 @@ class Receiver:
         # Initial filter taps
         # cdef np.ndarray prb_filter_states = np.zeros(prb_intr.size-1, dtype=np.complex64)
 
-        ts_str = datetime.today().strftime('%Y-%m-%d_%H_%M')
-        out_dir = f"../measurements/{ts_str}_ch{self.channel_label}"
+        if self.out_subdir:
+            out_dir = f"../measurements/{self.out_subdir}"
+        else:
+            ts_str = datetime.today().strftime('%Y-%m-%d_%H_%M')
+            out_dir = f"../measurements/{ts_str}_ch{self.channel_label}"
         if not os.path.exists(out_dir):
             os.makedirs(out_dir)
 
@@ -564,6 +575,7 @@ class Receiver:
                          detect     =  detect if detect is not None else {},
                          ofdm_meas  =  ofdm_meas if ofdm_meas is not None else {},
                          channel_label = self.channel_label,
+                         tx_node = (self.tx_node or ""),
                          allow_pickle = True
                         )
             elif self.config.RX.OUTPUT_TYPE == "mat":
@@ -580,6 +592,7 @@ class Receiver:
                             "detect": detect if detect is not None else {},
                             "ofdm_meas": ofdm_meas if ofdm_meas is not None else {},
                             "channel_label": self.channel_label,
+                            "tx_node": (self.tx_node or ""),
                         })
 
 
@@ -667,6 +680,7 @@ class Receiver:
                 break
             try:
                 burst_index += 1
+                self.frame_count = burst_index
                 scheduled_rx_start = scheduler.time_for_index(next_slot_index)
                 usrp_time = usrp.get_time_now().get_real_secs()
                 if scheduled_rx_start <= usrp_time:

@@ -65,6 +65,37 @@ def check_host_clock_sync(logger):
     logger.warn("no NTP query tool found (timedatectl / chronyc); cannot verify host clock")
 
 
+def configure_role(usrp, config, role, rx_subdev=None, tx_subdev=None):
+    role = role.upper()
+    if role == "RX":
+        subdev = rx_subdev or config.USRP_CONF.RX_SUBDEV
+        usrp.set_rx_subdev_spec(uhd.usrp.SubdevSpec(subdev))
+        rx_gain = (config.USRP_CONF.RX_GAIN
+                   if config.USRP_CONF.RX_GAIN is not None
+                   else config.USRP_CONF.GAIN)
+        usrp.set_rx_rate(config.USRP_CONF.SAMPLE_RATE, 0)
+        usrp.clear_command_time()
+        usrp.set_command_time(usrp.get_time_now() + uhd.types.TimeSpec(0.1))
+        usrp.set_rx_freq(uhd.libpyuhd.types.tune_request(config.USRP_CONF.CENTER_FREQ), 0)
+        usrp.set_rx_gain(float(rx_gain), 0)
+        usrp.clear_command_time()
+    elif role == "TX":
+        subdev = tx_subdev or config.USRP_CONF.TX_SUBDEV
+        usrp.set_tx_subdev_spec(uhd.usrp.SubdevSpec(subdev))
+        tx_gain = (config.USRP_CONF.TX_GAIN
+                   if config.USRP_CONF.TX_GAIN is not None
+                   else config.USRP_CONF.GAIN)
+        usrp.set_tx_rate(config.USRP_CONF.SAMPLE_RATE, 0)
+        usrp.clear_command_time()
+        usrp.set_command_time(usrp.get_time_now() + uhd.types.TimeSpec(0.1))
+        usrp.set_tx_freq(uhd.libpyuhd.types.tune_request(config.USRP_CONF.CENTER_FREQ), 0)
+        usrp.set_tx_gain(float(tx_gain), 0)
+        usrp.clear_command_time()
+    else:
+        raise ValueError(f"unknown role {role!r}; expected 'TX' or 'RX'")
+    time.sleep(0.1)  # LO settle
+
+
 def createMultiUSRP(config):
     dev_str = f"num_recv_frames={config.USRP_CONF.NUM_FRAMES},num_send_frames={config.USRP_CONF.NUM_FRAMES}"
     dev_str += f",serial={config.USRP_CONF.SERIAL}" if config.USRP_CONF.SERIAL else ""
