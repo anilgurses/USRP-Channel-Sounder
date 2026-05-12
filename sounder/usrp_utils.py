@@ -6,29 +6,35 @@ import time
 import uhd
 
 
-def align_device_time_to_utc(usrp, logger, terminate=None):
-    now = time.time()
-    target_utc = math.ceil(now) + 1
-    # If we're within 200 ms of the next PPS edge, the USRP may not see
-    # the arming command before the edge fires. Wait one tick
-    # PCs are NTP synced. Therefore, 200ms is not a problem here
-    if target_utc - now < 0.2:
-        time.sleep(0.3)
+def align_device_time_to_utc(usrp, logger, terminate=None,
+                              max_retries=3, edge_slack_s=0.3):
+    for attempt in range(1, max_retries + 1):
+        _raise_if_terminating(terminate)
         now = time.time()
-        target_utc = math.ceil(now) + 1
-    _raise_if_terminating(terminate)
-    usrp.set_time_next_pps(uhd.types.TimeSpec(float(target_utc)))
-    wait_s = max(0.0, target_utc - time.time()) + 0.3
-    time.sleep(wait_s)
-    observed = usrp.get_time_last_pps().get_real_secs()
-    if abs(observed - target_utc) > 0.5:
-        raise RuntimeError(
-            f"UTC alignment failed: device last_pps={observed:.3f} expected~={target_utc} "
-            "(check host NTP / GPSDO PPS wiring)"
+        next_pps_at = math.ceil(now)
+        slack = next_pps_at - now
+        if slack < edge_slack_s:
+            # Too close to the next edge
+            time.sleep(slack + 0.05)
+            continue
+        target_utc = next_pps_at  # device clock value AT the next PPS edge
+        usrp.set_time_next_pps(uhd.types.TimeSpec(float(target_utc)))
+        wait_s = max(0.0, target_utc - time.time()) + 0.2
+        time.sleep(wait_s)
+        observed = usrp.get_time_last_pps().get_real_secs()
+        if abs(observed - target_utc) < 0.5:
+            logger.info(
+                "device time UTC-aligned: target=%d, last_pps=%.3f, host=%.3f",
+                target_utc, observed, time.time(),
+            )
+            return
+        logger.warn(
+            "UTC alignment attempt %d: target=%d last_pps=%.3f (off by %.3fs); retrying",
+            attempt, target_utc, observed, observed - target_utc,
         )
-    logger.info(
-        "device time UTC-aligned: target=%d, last_pps=%.3f, host=%.3f",
-        target_utc, observed, time.time(),
+    raise RuntimeError(
+        f"UTC alignment failed after {max_retries} attempts (last observed="
+        f"{observed:.3f} vs target={target_utc}); check host NTP / GPSDO PPS wiring"
     )
 
 
