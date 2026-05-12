@@ -62,9 +62,12 @@ USRP:
   INIT_DELAY: 0.5
   CLK_REF: EXT            
   PPS_REF: EXT            
-  TX_SUBDEV: "A:0"
+  # Subdev spec format depends on device family:
+  #   B210 / B205mini: "A:A" and "A:B"  (one daughterboard, two RF channels)
+  #   X310 / N210:     "A:0" and "B:0"  (two daughterboards, channel 0 of each)
+  TX_SUBDEV: "A:A"
   TX_CHANNEL_LABEL: "A"
-  RX_SUBDEV: "A:0"        # coordinator overrides per cycle (A:0 then B:0)
+  RX_SUBDEV: "A:A"        # coordinator overrides per cycle (A:A then A:B on B-series)
   RX_CHANNEL_LABEL: "A"
 INTERPOLATION:
   ENABLED: false

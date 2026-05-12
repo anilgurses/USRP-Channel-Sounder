@@ -57,7 +57,8 @@ USRP:
   INIT_DELAY: 0.5
   CLK_REF: EXT
   PPS_REF: EXT
-  RX_SUBDEV: "A:0"       #  "A:0" or "B:0" 
+  # B210/B205mini: "A:A" / "A:B"   X310/N210: "A:0" / "B:0"
+  RX_SUBDEV: "A:A"
   RX_CHANNEL_LABEL: "A"
 INTERPOLATION:
   ENABLED: false

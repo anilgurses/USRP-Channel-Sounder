@@ -1,8 +1,8 @@
-"""Coordinator daemon for synchronised multi-node sounder captures.
+"""Coordinator daemon for synchronised multi-node sounder experiments
 
 Two run modes:
 
-1) **Single-shot** (legacy compatible): the coordinator broadcasts one START
+1) **Single-shot** : the coordinator broadcasts one START
    message when N nodes connect, then exits. Useful for bench tests and for
    the manual A/B workflow when you don't want a full sweep.
 
@@ -131,18 +131,28 @@ def _broadcast(nodes: list[_NodeConnection], payload: dict) -> None:
             node.alive = False
 
 
+def _channel_label_for_subdev(subdev: str, all_subdevs: list[str]) -> str:
+    slot, _, channel = subdev.partition(":")
+    slots = [s.partition(":")[0] for s in all_subdevs]
+    channels = [s.partition(":")[2] for s in all_subdevs]
+    if len(set(channels)) > 1:
+        return channel.upper()
+    if len(set(slots)) > 1:
+        return slot.upper()
+    return subdev.upper()
+
+
 def _build_sweep(tx_nodes: list[str], subdevs: list[str]) -> list[_CyclePlan]:
     """Build the cycle list: outer = TX rotation, inner = subdev."""
     cycles: list[_CyclePlan] = []
     idx = 0
     for tx in tx_nodes:
         for subdev in subdevs:
-            label = subdev.split(":", 1)[0].strip()
             cycles.append(_CyclePlan(
                 cycle_index=idx,
                 tx_node=tx.strip().lower(),
                 rx_subdev=subdev,
-                channel_label=label.upper(),
+                channel_label=_channel_label_for_subdev(subdev, subdevs),
             ))
             idx += 1
     return cycles
@@ -271,6 +281,12 @@ def run_sweep(host: str, port: int, expected: int,
                       f"{sorted(pending)}", file=sys.stderr)
             manifest["cycles"].append(cycle_record)
             _write_manifest(manifest_path, manifest)
+            min_end = epoch + duration
+            if time.time() < min_end:
+                time.sleep(min_end - time.time())
+            if not any(n.alive for n in nodes):
+                print("[coordinator] all nodes dropped; aborting sweep", file=sys.stderr)
+                break
     finally:
         # Send shutdown to anyone still connected.
         alive_nodes = [n for n in nodes if n.alive]
@@ -317,8 +333,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--sweep-tx-nodes", default=None,
                         help="Comma-separated TX rotation, e.g. 'lw1,lw2,lw3,lw4,lw5'. "
                              "Triggers sweep mode.")
-    parser.add_argument("--sweep-subdevs", default="A:0,B:0",
-                        help="Comma-separated subdev list (inner loop). Default A:0,B:0.")
+    parser.add_argument("--sweep-subdevs", default="A:A,A:B",
+                        help="Comma-separated subdev list (inner loop). "
+                             "Default A:A,A:B (B210/B205mini). For X310/N210 use A:0,B:0.")
     parser.add_argument("--manifest-dir", default=str(Path(__file__).resolve().parent.parent / "sweeps"),
                         help="Directory where the sweep manifest.json is written.")
     args = parser.parse_args(argv)

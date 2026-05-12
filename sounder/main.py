@@ -40,8 +40,7 @@ class CoordinatorClient:
         self.mode = mode
         self.logger = logger
         self.sock = socket.create_connection((host, int(port)), timeout=30.0)
-        if timeout_s is not None:
-            self.sock.settimeout(timeout_s)
+        self.sock.settimeout(timeout_s)
         self._buf = b""
 
     def send_hello(self):

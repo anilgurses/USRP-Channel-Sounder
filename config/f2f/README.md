@@ -28,7 +28,7 @@ Pairwise 3D distances: 454 m (lw1-lw2) up to 2119 m (lw3-lw5).
 python3 sounder/coordinator.py \
     --expected-nodes 5 \
     --sweep-tx-nodes lw1,lw2,lw3,lw4,lw5 \
-    --sweep-subdevs A:0,B:0 \
+    --sweep-subdevs A:A,A:B \      # B210/B205mini. For X310/N210 use A:0,B:0.
     --duration 30 \
     --lead-per-cycle-s 5
 #    Writes `sweeps/sweep_<utc-iso>/manifest.json` as cycles complete.

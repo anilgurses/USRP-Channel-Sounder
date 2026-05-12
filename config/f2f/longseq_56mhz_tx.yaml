@@ -56,8 +56,9 @@ USRP:
   INIT_DELAY: 2.0
   CLK_REF: EXT           
   PPS_REF: EXT
-  TX_SUBDEV: "A:0"       
-  TX_CHANNEL_LABEL: "A"  
+  # B210/B205mini: "A:A" / "A:B"   X310/N210: "A:0" / "B:0"
+  TX_SUBDEV: "A:A"
+  TX_CHANNEL_LABEL: "A"
 INTERPOLATION:
   ENABLED: false
   SPS: 8
